@@ -1,0 +1,12 @@
+{
+  "id": "obsidian-ima-plugin",
+  "name": "IMA Plugin",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "IMA 知识库同步插件 - 将 IMA 笔记同步到 Obsidian",
+  "author": "Your Name",
+  "authorUrl": "https://github.com/yourusername",
+  "fundingUrl": "https://github.com/sponsors/yourusername",
+  "isDesktopOnly": false,
+  "tags": ["sync", "ima", "knowledge-base"]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "obsidian-ima-plugin",
+  "version": "1.0.0",
+  "description": "IMA 知识库同步插件 - 将 IMA 笔记同步到 Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.js --watch",
+    "build": "node esbuild.config.js",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "ima",
+    "knowledge-base",
+    "sync"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.0.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  }
+}

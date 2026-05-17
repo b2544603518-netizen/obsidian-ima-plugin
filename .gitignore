@@ -1,0 +1,20 @@
+﻿# Dependencies
+node_modules/
+
+# Build output
+main.js
+*.map
+
+# Obsidian
+data.json
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
