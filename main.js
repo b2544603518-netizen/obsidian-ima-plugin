@@ -52,7 +52,7 @@ __export(exports, {
 });
 var import_obsidian = __toModule(require("obsidian"));
 var DEFAULT_SETTINGS = {
-  clientId: "4500bc3e9924560abc18944655cfa0d3",
+  clientId: "",
   apiKey: "",
   targetFolder: "IMA\u77E5\u8BC6\u5E93",
   lastSyncTime: "",
