@@ -130,6 +130,11 @@ var ImaPlugin = class extends import_obsidian.Plugin {
       try {
         const api = new ImaApi(this.settings.clientId, this.settings.apiKey);
         const knowledgeBases = yield api.searchAllKnowledgeBases();
+        console.log(`[IMA DEBUG] \u77E5\u8BC6\u5E93\u5217\u8868\u6570\u91CF: ${knowledgeBases ? knowledgeBases.length : 0}`);
+        if (knowledgeBases && knowledgeBases.length > 0) {
+          console.log(`[IMA DEBUG] \u7B2C\u4E00\u4E2A\u77E5\u8BC6\u5E93\u5B57\u6BB5:`, Object.keys(knowledgeBases[0]));
+          console.log(`[IMA DEBUG] \u7B2C\u4E00\u4E2A\u77E5\u8BC6\u5E93\u5185\u5BB9:`, JSON.stringify(knowledgeBases[0]));
+        }
         if (!knowledgeBases || knowledgeBases.length === 0) {
           new import_obsidian.Notice("\u672A\u627E\u5230\u53EF\u7528\u7684\u77E5\u8BC6\u5E93");
           return;
@@ -150,15 +155,30 @@ var ImaPlugin = class extends import_obsidian.Plugin {
         let skippedPermission = 0;
         let skippedFolder = 0;
         let skippedEmpty = 0;
+        const failReasons = [];
+        console.log(`[IMA DEBUG] 目标知识库:`, targetKbs.map(k => ({ kb_id: k.kb_id, kb_name: k.kb_name })));
+        console.log(`[IMA DEBUG] selectedKbIds=`, selectedKbIds, `settings.selectedKbs=`, this.settings.selectedKbs);
         for (const kb of targetKbs) {
           const items = yield api.getAllKnowledgeList(kb.kb_id);
-          if (!items || items.length === 0)
-            continue;
-          for (const item of items) {
-            if (item.media_type === 99) {
+          console.log(`[IMA DEBUG] 知识库 "${kb.kb_name}" 根目录获取到 ${items ? items.length : 0} 个条目`);
+          const allNoteItems = [];
+          const folderQueue = [...(items || [])];
+          while (folderQueue.length > 0) {
+            const current = folderQueue.shift();
+            console.log(`[IMA DEBUG] 遍历: title="${current.title}", media_type=${current.media_type}, media_id=${current.media_id}`);
+            if (current.media_type === 99) {
               skippedFolder++;
-              continue;
+              const folderItems = yield api.getAllKnowledgeList(kb.kb_id, current.media_id);
+              console.log(`[IMA DEBUG] 文件夹 "${current.title}" 内获取到 ${folderItems ? folderItems.length : 0} 个条目`);
+              if (folderItems && folderItems.length > 0) {
+                folderQueue.push(...folderItems);
+              }
+            } else {
+              allNoteItems.push(current);
             }
+          }
+          console.log(`[IMA DEBUG] 知识库 "${kb.kb_name}" 最终收集到 ${allNoteItems.length} 个笔记条目`);
+          for (const item of allNoteItems) {
             let content = null;
             let failReason = "";
             try {
@@ -175,7 +195,7 @@ var ImaPlugin = class extends import_obsidian.Plugin {
                 if (exportResult.success && exportResult.content) {
                   content = exportResult.content;
                 } else {
-                  failReason = failReason || `export_media \u5931\u8D25: ${exportResult.error}`;
+                  failReason = failReason || `get_media_info \u5931\u8D25: ${exportResult.error}`;
                 }
               }
               if (content) {
@@ -187,11 +207,15 @@ var ImaPlugin = class extends import_obsidian.Plugin {
                 syncedCount++;
               } else {
                 skippedPermission++;
-                console.warn(`[IMA] \u8DF3\u8FC7: ${item.title} - ${failReason}`);
+                const reason = `[IMA] \u8DF3\u8FC7: ${item.title || "\u672A\u547D\u540D"} (media_type=${item.media_type}) - ${failReason}`;
+                console.warn(reason);
+                if (failReasons.length < 5) failReasons.push(reason);
               }
             } catch (e) {
               skippedPermission++;
-              console.warn(`[IMA] \u8DF3\u8FC7: ${item.title} - ${e.message}`);
+              const reason = `[IMA] \u8DF3\u8FC7: ${item.title || "\u672A\u547D\u540D"} - ${e.message}`;
+              console.warn(reason);
+              if (failReasons.length < 5) failReasons.push(reason);
             }
           }
         }
@@ -199,13 +223,86 @@ var ImaPlugin = class extends import_obsidian.Plugin {
         yield this.saveSettings();
         let msg = `\u540C\u6B65 ${syncedCount} \u4E2A\u6587\u4EF6`;
         if (skippedPermission > 0)
-          msg += `\uFF0C\u8DF3\u8FC7 ${skippedPermission} \u4E2A\uFF08\u6743\u9650\u4E0D\u8DB3\uFF09`;
+          msg += `\uFF0C\u8DF3\u8FC7 ${skippedPermission} \u4E2A\uFF08\u83B7\u53D6\u5931\u8D25\uFF09`;
         if (skippedFolder > 0)
           msg += `\uFF0C\u8DF3\u8FC7 ${skippedFolder} \u4E2A\u6587\u4EF6\u5939`;
-        new import_obsidian.Notice(msg);
+        msg += `\n\u4FDD\u5B58\u4F4D\u7F6E: ${this.settings.targetFolder}`;
+        new import_obsidian.Notice(msg, 8e3);
+        if (failReasons.length > 0) {
+          console.warn("[IMA] \u524D5\u6761\u5931\u8D25\u539F\u56E0:\n" + failReasons.join("\n"));
+        }
       } catch (e) {
         console.error("[IMA] \u540C\u6B65\u5931\u8D25:", e);
         new import_obsidian.Notice("\u540C\u6B65\u5931\u8D25: " + e.message);
+      }
+    });
+  }
+  syncNoteItems(noteItems) {
+    return __async(this, null, function* () {
+      new import_obsidian.Notice("开始同步选中笔记...");
+      try {
+        const api = new ImaApi(this.settings.clientId, this.settings.apiKey);
+        let syncedCount = 0;
+        let skippedPermission = 0;
+        const failReasons = [];
+        const savedPaths = [];
+        for (const item of noteItems) {
+          let content = null;
+          let failReason = "";
+          try {
+            if (item.media_type === 11) {
+              const docResult = yield api.getDocContentWithError(item.media_id);
+              if (docResult.success && docResult.content) {
+                content = docResult.content;
+              } else {
+                failReason = `export_note 失败: ${docResult.error}`;
+              }
+            }
+            if (!content) {
+              const exportResult = yield api.exportMediaWithError(item.media_id);
+              if (exportResult.success && exportResult.content) {
+                content = exportResult.content;
+              } else {
+                failReason = failReason || `get_media_info 失败: ${exportResult.error}`;
+              }
+            }
+            if (content) {
+              const title = item.title || "未命名";
+              const safeTitle = title.replace(/[/\\:*?"<>|]/g, "_").substring(0, 100);
+              const kbName = (item.kb_name || "未命名知识库").replace(/[/\\:*?"<>|]/g, "_").substring(0, 50);
+              const filePath = `${this.settings.targetFolder}/${kbName}/${safeTitle}.md`;
+              const frontMatter = this.generateFrontMatter({ kb_name: item.kb_name }, item);
+              yield this.saveFile(filePath, frontMatter + content);
+              syncedCount++;
+              savedPaths.push(filePath);
+              console.log(`[IMA] 已保存: ${filePath}`);
+            } else {
+              skippedPermission++;
+              const reason = `[IMA] 跳过: ${item.title || "未命名"} - ${failReason}`;
+              console.warn(reason);
+              if (failReasons.length < 5) failReasons.push(reason);
+            }
+          } catch (e) {
+            skippedPermission++;
+            const reason = `[IMA] 跳过: ${item.title || "未命名"} - ${e.message}`;
+            console.warn(reason);
+            if (failReasons.length < 5) failReasons.push(reason);
+          }
+        }
+        let msg = `同步 ${syncedCount} 个文件`;
+        if (skippedPermission > 0)
+          msg += `，跳过 ${skippedPermission} 个（获取失败）`;
+        msg += `\n保存位置: ${this.settings.targetFolder}`;
+        if (savedPaths.length > 0) {
+          msg += `\n示例: ${savedPaths[0]}`;
+        }
+        new import_obsidian.Notice(msg, 8e3);
+        if (failReasons.length > 0) {
+          console.warn("[IMA] 前5条失败原因:\n" + failReasons.join("\n"));
+        }
+      } catch (e) {
+        console.error("[IMA] 同步失败:", e);
+        new import_obsidian.Notice("同步失败: " + e.message);
       }
     });
   }
@@ -252,6 +349,7 @@ var ImaApi = class {
   request(_0, _1) {
     return __async(this, arguments, function* (baseUrl, endpoint, data = {}) {
       const url = `${baseUrl}/${endpoint}`;
+      console.log(`[IMA DEBUG] API请求: ${endpoint}`, JSON.stringify(data));
       const resp = yield (0, import_obsidian.requestUrl)({
         url,
         method: "POST",
@@ -262,6 +360,7 @@ var ImaApi = class {
         },
         body: JSON.stringify(data)
       });
+      console.log(`[IMA DEBUG] API响应: ${endpoint} code=${resp.json.code}`, resp.json);
       if (resp.json.code !== 0) {
         throw new Error(`${endpoint}: ${resp.json.msg || "\u672A\u77E5\u9519\u8BEF"}`);
       }
@@ -291,16 +390,20 @@ var ImaApi = class {
       return allKbs;
     });
   }
-  getAllKnowledgeList(kbId) {
+  getAllKnowledgeList(kbId, folderId = "") {
     return __async(this, null, function* () {
       const allItems = [];
       let cursor = "";
       while (true) {
-        const data = yield this.request(this.wikiBaseUrl, "get_knowledge_list", {
+        const reqData = {
           knowledge_base_id: kbId,
           cursor,
           limit: 50
-        });
+        };
+        if (folderId) {
+          reqData.folder_id = folderId;
+        }
+        const data = yield this.request(this.wikiBaseUrl, "get_knowledge_list", reqData);
         const items = (data == null ? void 0 : data.knowledge_list) || [];
         if (items.length === 0)
           break;
@@ -318,10 +421,10 @@ var ImaApi = class {
     return __async(this, null, function* () {
       var _a;
       try {
-        const data = yield this.request(this.wikiBaseUrl, "export_media_for_ima_sandbox", {
+        const data = yield this.request(this.wikiBaseUrl, "get_media_info", {
           media_id: mediaId
         });
-        const downloadUrl = (_a = data == null ? void 0 : data.media_content_url_info) == null ? void 0 : _a.url;
+        const downloadUrl = data == null ? void 0 : data.download_url;
         if (!downloadUrl)
           return null;
         const resp = yield (0, import_obsidian.requestUrl)({ url: downloadUrl, method: "GET" });
@@ -334,13 +437,8 @@ var ImaApi = class {
   getDocContent(docId) {
     return __async(this, null, function* () {
       try {
-        const data = yield this.request(this.noteBaseUrl, "get_doc_content", {
-          doc_id: docId,
-          target_content_format: 1
-        });
-        if (data == null ? void 0 : data.content)
-          return data.content;
-        return null;
+        const result = yield this.getDocContentWithError(docId);
+        return result.success ? result.content : null;
       } catch (e) {
         return null;
       }
@@ -348,34 +446,54 @@ var ImaApi = class {
   }
   getDocContentWithError(docId) {
     return __async(this, null, function* () {
+      let noteId = docId;
+      const parts = docId.split("_");
+      if (parts.length >= 2) {
+        noteId = parts[parts.length - 1];
+      }
       try {
-        const data = yield this.request(this.noteBaseUrl, "get_doc_content", {
-          doc_id: docId,
+        console.log(`[IMA DEBUG] export_note 请求: ${noteId}`);
+        const data = yield this.request(this.noteBaseUrl, "export_note", {
+          note_id: noteId,
           target_content_format: 1
         });
-        if (data == null ? void 0 : data.content) {
-          return { success: true, content: data.content };
+        console.log(`[IMA DEBUG] export_note 返回:`, JSON.stringify(data));
+        let downloadUrl = data == null ? void 0 : data.content_url;
+        if (!downloadUrl && (data == null ? void 0 : data.url_info)) {
+          downloadUrl = data.url_info.url;
         }
-        return { success: false, error: "\u5185\u5BB9\u4E3A\u7A7A" };
+        if (!downloadUrl) {
+          return { success: false, error: "\u65E0\u4E0B\u8F7D\u94FE\u63A5" };
+        }
+        const resp = yield (0, import_obsidian.requestUrl)({ url: downloadUrl, method: "GET" });
+        console.log(`[IMA DEBUG] 下载内容长度:`, resp.text ? resp.text.length : 0);
+        return { success: true, content: resp.text };
       } catch (e) {
+        console.warn(`[IMA DEBUG] export_note 异常:`, e.message);
         return { success: false, error: e.message };
       }
     });
   }
   exportMediaWithError(mediaId) {
     return __async(this, null, function* () {
-      var _a;
       try {
-        const data = yield this.request(this.wikiBaseUrl, "export_media_for_ima_sandbox", {
+        console.log(`[IMA DEBUG] get_media_info 请求: ${mediaId}`);
+        const data = yield this.request(this.wikiBaseUrl, "get_media_info", {
           media_id: mediaId
         });
-        const downloadUrl = (_a = data == null ? void 0 : data.media_content_url_info) == null ? void 0 : _a.url;
+        console.log(`[IMA DEBUG] get_media_info 返回:`, JSON.stringify(data));
+        let downloadUrl = data == null ? void 0 : data.content_url;
+        if (!downloadUrl && (data == null ? void 0 : data.url_info)) {
+          downloadUrl = data.url_info.url;
+        }
         if (!downloadUrl) {
           return { success: false, error: "\u65E0\u4E0B\u8F7D\u94FE\u63A5" };
         }
         const resp = yield (0, import_obsidian.requestUrl)({ url: downloadUrl, method: "GET" });
+        console.log(`[IMA DEBUG] 下载内容长度:`, resp.text ? resp.text.length : 0);
         return { success: true, content: resp.text };
       } catch (e) {
+        console.warn(`[IMA DEBUG] get_media_info 异常:`, e.message);
         return { success: false, error: e.message };
       }
     });
@@ -383,21 +501,22 @@ var ImaApi = class {
   listNotebooks() {
     return __async(this, null, function* () {
       const notebooks = [];
-      let cursor = "0";
+      let cursor = "";
       while (true) {
         try {
-          const data = yield this.request(this.noteBaseUrl, "list_note_by_folder_id", {
+          const data = yield this.request(this.noteBaseUrl, "list_note", {
+            sort_type: 1,
             cursor,
             limit: 20
           });
-          const items = (data == null ? void 0 : data.notes) || [];
+          const items = (data == null ? void 0 : data.note_book_list) || [];
           if (items.length === 0)
             break;
           notebooks.push(...items);
           if (data.is_end)
             break;
           cursor = data.next_cursor || "";
-          if (!cursor || cursor === "0")
+          if (!cursor)
             break;
         } catch (e) {
           break;
@@ -581,7 +700,7 @@ var NotebookNotesModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "\u7B14\u8BB0\u672C\u7B14\u8BB0" });
-    contentEl.createEl("p", { text: "\u8FD9\u662F\u4F60\u81EA\u5DF1\u7684\u7B14\u8BB0\u672C\u7B14\u8BB0\uFF0C\u53EF\u4EE5\u6B63\u5E38\u540C\u6B65" });
+    contentEl.createEl("p", { text: "\u8BF7\u52FE\u9009\u8981\u540C\u6B65\u7684\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u672A\u9009\u4E2D\u4EFB\u4F55\u7B14\u8BB0\uFF09" });
     if (!this.notebooks || this.notebooks.length === 0) {
       contentEl.createEl("p", { text: "\u672A\u627E\u5230\u7B14\u8BB0\u672C\u7B14\u8BB0" });
       return;
@@ -595,9 +714,9 @@ var NotebookNotesModal = class extends import_obsidian.Modal {
       noteDiv.createEl("span", { text: note.title || "\u672A\u547D\u540D" });
       checkbox.onchange = () => {
         if (checkbox.checked) {
-          selectedNotes.add(note.doc_id);
+          selectedNotes.add(note.note_id);
         } else {
-          selectedNotes.delete(note.doc_id);
+          selectedNotes.delete(note.note_id);
         }
       };
     }
@@ -605,7 +724,7 @@ var NotebookNotesModal = class extends import_obsidian.Modal {
     btnContainer.style.marginTop = "20px";
     const selectAllBtn = btnContainer.createEl("button", { text: "\u5168\u9009" });
     selectAllBtn.onclick = () => {
-      this.notebooks.forEach((n) => selectedNotes.add(n.doc_id));
+      this.notebooks.forEach((n) => selectedNotes.add(n.note_id));
       this.displayNotebooks();
     };
     const cancelBtn = btnContainer.createEl("button", { text: "\u53D6\u6D88" });
@@ -625,6 +744,7 @@ var NotebookNotesModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice(`\u5F00\u59CB\u540C\u6B65 ${noteIds.length} \u4E2A\u7B14\u8BB0...`);
       const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
       let syncedCount = 0;
+      let examplePath = "";
       for (const noteId of noteIds) {
         try {
           const content = yield api.getDocContent(noteId);
@@ -639,12 +759,17 @@ sync_time: "${new Date().toISOString()}"
 `;
             yield this.plugin.saveFile(filePath, frontMatter + content);
             syncedCount++;
+            if (!examplePath) examplePath = filePath;
+            console.log(`[IMA] \u7B14\u8BB0\u672C\u5DF2\u4FDD\u5B58: ${filePath}`);
           }
         } catch (e) {
           console.warn(`\u8DF3\u8FC7: ${noteId}`, e);
         }
       }
-      new import_obsidian.Notice(`\u7B14\u8BB0\u672C\u7B14\u8BB0\u540C\u6B65\u5B8C\u6210\uFF01\u540C\u6B65 ${syncedCount} \u4E2A`);
+      let msg = `\u7B14\u8BB0\u672C\u7B14\u8BB0\u540C\u6B65\u5B8C\u6210\uFF01\u540C\u6B65 ${syncedCount} \u4E2A`;
+      msg += `\n\u4FDD\u5B58\u4F4D\u7F6E: ${this.plugin.settings.targetFolder}`;
+      if (examplePath) msg += `\n\u793A\u4F8B: ${examplePath}`;
+      new import_obsidian.Notice(msg, 8e3);
     });
   }
   onClose() {
@@ -655,6 +780,9 @@ var KnowledgeBaseModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
+    this.allNoteItems = [];
+    this.selectedKbs = new Set();
+    this.selectedNotes = new Set();
   }
   onOpen() {
     return __async(this, null, function* () {
@@ -673,20 +801,19 @@ var KnowledgeBaseModal = class extends import_obsidian.Modal {
   displayKbs() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "\u9009\u62E9\u8981\u540C\u6B65\u7684\u77E5\u8BC6\u5E93" });
+    contentEl.createEl("h2", { text: "\u9009\u62E9\u8981\u52A0\u8F7D\u7B14\u8BB0\u7684\u77E5\u8BC6\u5E93" });
     contentEl.createEl("p", { text: "\u26A0\uFE0F \u6CE8\u610F\uFF1A\u77E5\u8BC6\u5E93\u91CC\u7684\u7B14\u8BB0\u53EF\u80FD\u9700\u8981\u6743\u9650\u624D\u80FD\u8BFB\u53D6" });
     if (!this.knowledgeBases || this.knowledgeBases.length === 0) {
       contentEl.createEl("p", { text: "\u672A\u627E\u5230\u53EF\u7528\u77E5\u8BC6\u5E93" });
       return;
     }
-    const selectedKbs = new Set(this.plugin.settings.selectedKbs);
     for (const kb of this.knowledgeBases) {
       const kbDiv = contentEl.createDiv();
       kbDiv.style.marginBottom = "8px";
       kbDiv.style.padding = "8px";
       kbDiv.style.borderBottom = "1px solid #eee";
       const checkbox = kbDiv.createEl("input", { type: "checkbox" });
-      checkbox.checked = selectedKbs.has(kb.kb_id);
+      checkbox.checked = this.selectedKbs.has(kb.kb_id);
       checkbox.style.marginRight = "8px";
       const label = kbDiv.createEl("span", { text: ` ${kb.kb_name} ` });
       label.style.fontWeight = "bold";
@@ -699,9 +826,9 @@ var KnowledgeBaseModal = class extends import_obsidian.Modal {
       }
       checkbox.onchange = () => {
         if (checkbox.checked) {
-          selectedKbs.add(kb.kb_id);
+          this.selectedKbs.add(kb.kb_id);
         } else {
-          selectedKbs.delete(kb.kb_id);
+          this.selectedKbs.delete(kb.kb_id);
         }
       };
     }
@@ -709,23 +836,120 @@ var KnowledgeBaseModal = class extends import_obsidian.Modal {
     btnContainer.style.marginTop = "20px";
     const selectAllBtn = btnContainer.createEl("button", { text: "\u5168\u9009" });
     selectAllBtn.onclick = () => {
-      this.knowledgeBases.forEach((kb) => selectedKbs.add(kb.kb_id));
+      this.knowledgeBases.forEach((kb) => this.selectedKbs.add(kb.kb_id));
       this.displayKbs();
     };
     const cancelBtn = btnContainer.createEl("button", { text: "\u53D6\u6D88" });
     cancelBtn.onclick = () => this.close();
-    const syncBtn = btnContainer.createEl("button", { text: "\u5F00\u59CB\u540C\u6B65", cls: "mod-cta" });
-    syncBtn.onclick = () => __async(this, null, function* () {
-      const selected = Array.from(selectedKbs);
+    const loadBtn = btnContainer.createEl("button", { text: "\u52A0\u8F7D\u7B14\u8BB0", cls: "mod-cta" });
+    loadBtn.onclick = () => __async(this, null, function* () {
+      const selected = Array.from(this.selectedKbs);
       if (selected.length === 0) {
         new import_obsidian.Notice("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u77E5\u8BC6\u5E93");
         return;
       }
-      this.plugin.settings.selectedKbs = selected;
-      this.plugin.settings.selectedNotes = {};
-      yield this.plugin.saveSettings();
+      contentEl.empty();
+      contentEl.createEl("h2", { text: "\u6B63\u5728\u52A0\u8F7D\u7B14\u8BB0..." });
+      try {
+        const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
+        const allNoteItems = [];
+        for (const kbId of selected) {
+          const kb = this.knowledgeBases.find((k) => k.kb_id === kbId);
+          const items = yield api.getAllKnowledgeList(kbId);
+          const folderQueue = [...(items || [])];
+          while (folderQueue.length > 0) {
+            const current = folderQueue.shift();
+            if (current.media_type === 99) {
+              const folderItems = yield api.getAllKnowledgeList(kbId, current.media_id);
+              if (folderItems && folderItems.length > 0) {
+                folderQueue.push(...folderItems);
+              }
+            } else {
+              current.kb_id = kbId;
+              current.kb_name = kb ? kb.kb_name : "\u672A\u547D\u540D\u77E5\u8BC6\u5E93";
+              allNoteItems.push(current);
+            }
+          }
+        }
+        this.allNoteItems = allNoteItems;
+        this.selectedNotes.clear();
+        this.displayNotes();
+      } catch (e) {
+        contentEl.empty();
+        contentEl.createEl("h2", { text: "\u52A0\u8F7D\u5931\u8D25" });
+        contentEl.createEl("p", { text: e.message });
+      }
+    });
+  }
+  displayNotes() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "\u9009\u62E9\u8981\u540C\u6B65\u7684\u7B14\u8BB0" });
+    contentEl.createEl("p", { text: `\u5171\u627E\u5230 ${this.allNoteItems.length} \u6761\u7B14\u8BB0\uFF0C\u8BF7\u52FE\u9009\u8981\u540C\u6B65\u7684\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u672A\u9009\u4E2D\uFF09` });
+    if (!this.allNoteItems || this.allNoteItems.length === 0) {
+      contentEl.createEl("p", { text: "\u672A\u627E\u5230\u53EF\u540C\u6B65\u7684\u7B14\u8BB0" });
+      const backBtn = contentEl.createEl("button", { text: "\u8FD4\u56DE" });
+      backBtn.onclick = () => this.displayKbs();
+      return;
+    }
+    const container = contentEl.createDiv();
+    container.style.maxHeight = "400px";
+    container.style.overflow = "auto";
+    const grouped = {};
+    for (const item of this.allNoteItems) {
+      const kbName = item.kb_name || "\u672A\u547D\u540D\u77E5\u8BC6\u5E93";
+      if (!grouped[kbName]) grouped[kbName] = [];
+      grouped[kbName].push(item);
+    }
+    for (const [kbName, items] of Object.entries(grouped)) {
+      const kbHeader = container.createEl("h3", { text: kbName });
+      kbHeader.style.marginTop = "12px";
+      kbHeader.style.marginBottom = "6px";
+      kbHeader.style.fontSize = "14px";
+      kbHeader.style.color = "var(--text-accent)";
+      for (const item of items) {
+        const noteDiv = container.createDiv();
+        noteDiv.style.marginBottom = "6px";
+        noteDiv.style.paddingLeft = "8px";
+        const checkbox = noteDiv.createEl("input", { type: "checkbox" });
+        checkbox.checked = this.selectedNotes.has(item.media_id);
+        checkbox.style.marginRight = "8px";
+        const label = noteDiv.createEl("span", { text: item.title || "\u672A\u547D\u540D" });
+        if (item.media_type !== 11) {
+          const typeTag = noteDiv.createEl("span", {
+            text: ` [\u7C7B\u578B${item.media_type}]`,
+            cls: "setting-item-description"
+          });
+          typeTag.style.marginLeft = "4px";
+          typeTag.style.fontSize = "11px";
+        }
+        checkbox.onchange = () => {
+          if (checkbox.checked) {
+            this.selectedNotes.add(item.media_id);
+          } else {
+            this.selectedNotes.delete(item.media_id);
+          }
+        };
+      }
+    }
+    const btnContainer = contentEl.createDiv();
+    btnContainer.style.marginTop = "16px";
+    const selectAllBtn = btnContainer.createEl("button", { text: "\u5168\u9009" });
+    selectAllBtn.onclick = () => {
+      this.allNoteItems.forEach((item) => this.selectedNotes.add(item.media_id));
+      this.displayNotes();
+    };
+    const backBtn = btnContainer.createEl("button", { text: "\u8FD4\u56DE" });
+    backBtn.onclick = () => this.displayKbs();
+    const syncBtn = btnContainer.createEl("button", { text: "\u540C\u6B65\u9009\u4E2D", cls: "mod-cta" });
+    syncBtn.onclick = () => __async(this, null, function* () {
+      if (this.selectedNotes.size === 0) {
+        new import_obsidian.Notice("\u8BF7\u9009\u62E9\u8981\u540C\u6B65\u7684\u7B14\u8BB0");
+        return;
+      }
+      const selectedItems = this.allNoteItems.filter((item) => this.selectedNotes.has(item.media_id));
       this.close();
-      this.plugin.syncAll(true, selected);
+      yield this.plugin.syncNoteItems(selectedItems);
     });
   }
   onClose() {
