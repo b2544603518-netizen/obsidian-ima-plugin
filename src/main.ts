@@ -1,793 +1,476 @@
-import { Plugin, Notice, requestUrl, Setting, Modal, PluginSettingTab } from 'obsidian';
+import { Plugin, Notice } from 'obsidian';
+import { ImaApi } from './api/ima-api';
+import { CacheManager } from './core/cache';
+import { SyncManager } from './core/sync-manager';
+import { ImaSettingTab } from './ui/settings';
+import {
+  KnowledgeBaseModal,
+  NotebookNotesModal,
+  ShareNoteModal,
+} from './ui/modals';
+import { SyncProgressModal } from './ui/sync-progress-modal';
+import { diagnoseApiConnection } from './utils/api-diagnostic';
+import { PluginSettings, SyncMode, SyncProgress, SyncResult } from './types';
 
-const DEFAULT_SETTINGS = {
-    clientId: '4500bc3e9924560abc18944655cfa0d3',
-    apiKey: '',
-    targetFolder: 'IMA知识库',
-    lastSyncTime: '',
-    selectedKbs: [],
-    selectedNotes: {}
+const DEFAULT_SETTINGS: PluginSettings = {
+  clientId: '4500bc3e9924560abc18944655cfa0d3',
+  apiKey: '',
+  targetFolder: 'IMA知识库',
+  lastSyncTime: '',
+  selectedKbs: [],
+  selectedNotes: {},
+  cacheTtlMinutes: 30,
+  qpsLimit: 2,
+  enableIncrementalSync: true,
+  syncIntervalMinutes: 0,
+  autoSync: false,
+  maxRetries: 3,
+  requestTimeoutMs: 30000,
 };
 
-class ImaPlugin extends Plugin {
-    async onload() {
-        await this.loadSettings();
+const DEBUG = true;
+function log(...args: any[]) {
+  if (DEBUG) console.log('[IMA]', ...args);
+}
 
-        this.addCommand({
-            id: 'sync-ima-select',
-            name: '选择知识库同步',
-            callback: () => this.showSyncModal()
-        });
+export default class ImaPlugin extends Plugin {
+  settings!: PluginSettings;
+  api!: ImaApi;
+  cache!: CacheManager;
+  syncManager!: SyncManager;
 
-        this.addCommand({
-            id: 'sync-ima-full',
-            name: '全量同步 IMA 知识库',
-            callback: () => this.syncAll(true)
-        });
+  private autoSyncTimer: number | null = null;
+  private progressModal: SyncProgressModal | null = null;
 
-        this.addCommand({
-            id: 'sync-ima-share',
-            name: '同步分享链接笔记',
-            callback: () => this.syncFromShareLink()
-        });
+  async onload() {
+    log('插件加载开始');
+    await this.loadSettings();
 
-        this.addCommand({
-            id: 'sync-ima-notebook',
-            name: '同步笔记本笔记',
-            callback: () => this.syncNotebookNotes()
-        });
+    this.cache = new CacheManager(this.settings.cacheTtlMinutes);
+    this.cache.loadFrom((this.settings as any).cache || {});
 
-        this.addRibbonIcon('sync', 'IMA 同步', () => {
-            this.showSyncModal();
-        });
+    this.api = new ImaApi(this.settings.clientId, this.settings.apiKey, this.cache, {
+      qpsLimit: this.settings.qpsLimit,
+      maxRetries: this.settings.maxRetries,
+      requestTimeoutMs: this.settings.requestTimeoutMs,
+    });
 
-        this.addSettingTab(new ImaSettingTab(this.app, this));
-    }
+    this.syncManager = new SyncManager(this.app, this.api, this.cache, this.settings);
+    this.syncManager.setProgressCallback((p: SyncProgress) => {
+      // 修复:用自定义 opened 标志替代不存在的 Modal.isOpen
+      if (this.progressModal && this.progressModal.opened) {
+        this.progressModal.update(p);
+      }
+    });
 
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-        if (!this.settings.selectedKbs) this.settings.selectedKbs = [];
-        if (!this.settings.selectedNotes) this.settings.selectedNotes = {};
-        if (!this.settings.targetFolder) this.settings.targetFolder = 'IMA知识库';
-    }
+    // ===== 命令注册 =====
+    this.addCommand({
+      id: 'sync-ima-incremental',
+      name: '增量同步知识库(推荐)',
+      callback: () => {
+        log('命令触发: 增量同步知识库');
+        this.startKnowledgeBaseSync(null, 'incremental');
+      },
+    });
 
-    async saveSettings() {
-        await this.saveData(this.settings);
-    }
+    this.addCommand({
+      id: 'sync-ima-full',
+      name: '全量同步知识库',
+      callback: () => {
+        log('命令触发: 全量同步知识库');
+        this.startKnowledgeBaseSync(null, 'full');
+      },
+    });
 
-    async showSyncModal() {
-        if (!this.settings.apiKey) {
-            new Notice('请先在设置中配置 IMA API Key');
-            return;
-        }
-        new KnowledgeBaseModal(this.app, this).open();
-    }
+    this.addCommand({
+      id: 'sync-ima-select',
+      name: '选择知识库同步',
+      callback: () => {
+        log('命令触发: 选择知识库同步');
+        this.openKnowledgeBaseModal();
+      },
+    });
 
-    async syncFromShareLink(shareUrl: string = null) {
-        new ShareNoteModal(this.app, this, shareUrl).open();
-    }
+    this.addCommand({
+      id: 'sync-ima-share',
+      name: '同步分享链接笔记',
+      callback: () => {
+        log('命令触发: 同步分享链接');
+        new ShareNoteModal(this.app, this).open();
+      },
+    });
 
-    async syncNotebookNotes() {
-        new NotebookNotesModal(this.app, this).open();
-    }
+    this.addCommand({
+      id: 'sync-ima-notebook',
+      name: '同步笔记本笔记',
+      callback: () => {
+        log('命令触发: 同步笔记本笔记');
+        this.openNotebookNotesModal();
+      },
+    });
 
-    async syncAll(fullSync = true, selectedKbIds = null) {
-        new Notice('开始同步知识库...');
+    this.addCommand({
+      id: 'ima-clear-cache',
+      name: '清除 API 缓存',
+      callback: async () => {
+        log('命令触发: 清除缓存');
+        this.cache.clearAll();
+        await this.saveSettings();
+        new Notice('IMA 缓存已清除');
+      },
+    });
 
-        try {
-            const api = new ImaApi(this.settings.clientId, this.settings.apiKey);
-
-            const knowledgeBases = await api.searchAllKnowledgeBases();
-
-            if (!knowledgeBases || knowledgeBases.length === 0) {
-                new Notice('未找到可用的知识库');
-                return;
-            }
-
-            let targetKbs;
-            if (selectedKbIds && selectedKbIds.length > 0) {
-                targetKbs = knowledgeBases.filter(kb => selectedKbIds.includes(kb.kb_id));
-            } else if (this.settings.selectedKbs.length > 0) {
-                targetKbs = knowledgeBases.filter(kb => this.settings.selectedKbs.includes(kb.kb_id));
-            } else {
-                targetKbs = knowledgeBases;
-            }
-
-            if (targetKbs.length === 0) {
-                new Notice('请先选择要同步的知识库！');
-                return;
-            }
-
-            let syncedCount = 0;
-            let skippedPermission = 0;
-            let skippedFolder = 0;
-            let skippedEmpty = 0;
-
-            for (const kb of targetKbs) {
-                const items = await api.getAllKnowledgeList(kb.kb_id);
-
-                if (!items || items.length === 0) continue;
-
-                for (const item of items) {
-                    if (item.media_type === 99) {
-                        skippedFolder++;
-                        continue;
-                    }
-
-                    let content = null;
-                    let failReason = '';
-
-                    try {
-                        if (item.media_type === 11) {
-                            const docResult = await api.getDocContentWithError(item.media_id);
-                            if (docResult.success && docResult.content) {
-                                content = docResult.content;
-                            } else {
-                                failReason = `get_doc_content 失败: ${docResult.error}`;
-                            }
-                        }
-
-                        if (!content) {
-                            const exportResult = await api.exportMediaWithError(item.media_id);
-                            if (exportResult.success && exportResult.content) {
-                                content = exportResult.content;
-                            } else {
-                                failReason = failReason || `export_media 失败: ${exportResult.error}`;
-                            }
-                        }
-
-                        if (content) {
-                            const title = item.title || '未命名';
-                            const safeTitle = title.replace(/[/\\:*?"<>|]/g, '_').substring(0, 100);
-                            const filePath = `${this.settings.targetFolder}/${kb.kb_name}/${safeTitle}.md`;
-
-                            const frontMatter = this.generateFrontMatter(kb, item);
-                            await this.saveFile(filePath, frontMatter + content);
-                            syncedCount++;
-                        } else {
-                            skippedPermission++;
-                            console.warn(`[IMA] 跳过: ${item.title} - ${failReason}`);
-                        }
-                    } catch (e) {
-                        skippedPermission++;
-                        console.warn(`[IMA] 跳过: ${item.title} - ${e.message}`);
-                    }
-                }
-            }
-
-            this.settings.lastSyncTime = new Date().toISOString();
-            await this.saveSettings();
-
-            let msg = `同步 ${syncedCount} 个文件`;
-            if (skippedPermission > 0) msg += `，跳过 ${skippedPermission} 个（权限不足）`;
-            if (skippedFolder > 0) msg += `，跳过 ${skippedFolder} 个文件夹`;
-            new Notice(msg);
-
-        } catch (e) {
-            console.error('[IMA] 同步失败:', e);
-            new Notice('同步失败: ' + e.message);
-        }
-    }
-
-    generateFrontMatter(kb, item) {
-        return '---\n' +
-            'source: IMA知识库\n' +
-            `kb_name: "${kb?.kb_name || '未知'}"\n` +
-            `title: "${item.title}"\n` +
-            `media_id: "${item.media_id}"\n` +
-            `media_type: ${item.media_type}\n` +
-            `sync_time: "${new Date().toISOString()}"\n` +
-            '---\n\n';
-    }
-
-    async saveFile(path, content) {
-        const normalizedPath = path.replace(/[/\\]+/g, '/');
-        const folders = normalizedPath.split('/').slice(0, -1);
-
-        let currentPath = '';
-        for (const folder of folders) {
-            currentPath += folder + '/';
-            const folderPath = currentPath.slice(0, -1);
-            if (!this.app.vault.getAbstractFileByPath(folderPath)) {
-                await this.app.vault.createFolder(folderPath);
-            }
-        }
-
-        const existingFile = this.app.vault.getAbstractFileByPath(normalizedPath);
-        if (existingFile) {
-            await this.app.vault.modify(existingFile, content);
+    this.addCommand({
+      id: 'ima-cancel-sync',
+      name: '取消正在进行的同步',
+      callback: () => {
+        if (this.syncManager.isRunning()) {
+          log('取消同步请求');
+          this.syncManager.cancel();
+          new Notice('已请求取消同步');
         } else {
-            await this.app.vault.create(normalizedPath, content);
+          new Notice('当前没有正在进行的同步任务');
         }
+      },
+    });
+
+    this.addCommand({
+      id: 'ima-test-api',
+      name: '测试 API 连接(诊断)',
+      callback: () => this.testApiConnection(),
+    });
+
+    this.addCommand({
+      id: 'ima-diagnose',
+      name: 'API 完整诊断(详细报告)',
+      callback: () => this.runFullDiagnosis(),
+    });
+
+    this.addCommand({
+      id: 'ima-show-debug-info',
+      name: '显示调试信息',
+      callback: () => this.showDebugInfo(),
+    });
+
+    // Ribbon 按钮
+    this.addRibbonIcon('refresh-cw', 'IMA 增量同步', () => {
+      log('Ribbon 按钮点击: 增量同步');
+      this.startKnowledgeBaseSync(null, 'incremental');
+    });
+
+    this.addSettingTab(new ImaSettingTab(this.app, this));
+
+    if (this.settings.autoSync) {
+      this.scheduleAutoSync(true);
     }
-}
 
-class ImaApi {
-    clientId: string;
-    apiKey: string;
-    wikiBaseUrl = 'https://ima.qq.com/openapi/wiki/v1';
-    noteBaseUrl = 'https://ima.qq.com/openapi/note/v1';
+    log('插件加载完成, 版本=2.0.0, apiKey=', this.settings.apiKey ? '已配置' : '未配置');
+  }
 
-    constructor(clientId: string, apiKey: string) {
-        this.clientId = clientId;
-        this.apiKey = apiKey;
+  onunload() {
+    log('插件卸载');
+    if (this.autoSyncTimer !== null) {
+      window.clearInterval(this.autoSyncTimer);
+      this.autoSyncTimer = null;
+    }
+  }
+
+  async loadSettings() {
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    if (!this.settings.selectedKbs) this.settings.selectedKbs = [];
+    if (!this.settings.selectedNotes) this.settings.selectedNotes = {};
+    if (!this.settings.targetFolder) this.settings.targetFolder = 'IMA知识库';
+    if (typeof this.settings.cacheTtlMinutes !== 'number') this.settings.cacheTtlMinutes = 30;
+    if (typeof this.settings.qpsLimit !== 'number') this.settings.qpsLimit = 2;
+    if (typeof this.settings.maxRetries !== 'number') this.settings.maxRetries = 3;
+    if (typeof this.settings.requestTimeoutMs !== 'number') this.settings.requestTimeoutMs = 30000;
+    if (typeof this.settings.syncIntervalMinutes !== 'number') this.settings.syncIntervalMinutes = 0;
+    if (typeof this.settings.autoSync !== 'boolean') this.settings.autoSync = false;
+  }
+
+  async saveSettings() {
+    (this.settings as any).cache = this.cache.export();
+    await this.saveData(this.settings);
+  }
+
+  rescheduleAutoSync() {
+    this.scheduleAutoSync(false);
+  }
+
+  private scheduleAutoSync(immediate: boolean) {
+    if (this.autoSyncTimer !== null) {
+      window.clearInterval(this.autoSyncTimer);
+      this.autoSyncTimer = null;
+    }
+    if (!this.settings.autoSync) return;
+
+    if (immediate) {
+      window.setTimeout(() => {
+        if (!this.syncManager.isRunning()) {
+          this.startKnowledgeBaseSync(null, 'incremental', true);
+        }
+      }, 5000);
     }
 
-    async request(baseUrl: string, endpoint: string, data: any = {}) {
-        const url = `${baseUrl}/${endpoint}`;
+    if (this.settings.syncIntervalMinutes > 0) {
+      this.autoSyncTimer = window.setInterval(() => {
+        if (!this.syncManager.isRunning()) {
+          this.startKnowledgeBaseSync(null, 'incremental', true);
+        }
+      }, this.settings.syncIntervalMinutes * 60 * 1000);
+    }
+  }
 
-        const resp = await requestUrl({
-            url: url,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'ima-openapi-clientid': this.clientId,
-                'ima-openapi-apikey': this.apiKey
-            },
-            body: JSON.stringify(data)
+  // ===== UI 入口 =====
+
+  openKnowledgeBaseModal(): void {
+    log('打开知识库选择 Modal, apiKey=', !!this.settings.apiKey);
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
+    }
+    try {
+      const modal = new KnowledgeBaseModal(this.app, this);
+      modal.open();
+    } catch (e: any) {
+      console.error('[IMA] 打开知识库 Modal 异常:', e);
+      new Notice('无法打开窗口: ' + e.message);
+    }
+  }
+
+  openNotebookNotesModal(): void {
+    log('打开笔记本同步 Modal, apiKey=', !!this.settings.apiKey);
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
+    }
+    try {
+      new NotebookNotesModal(this.app, this).open();
+    } catch (e: any) {
+      console.error('[IMA] 打开笔记本 Modal 异常:', e);
+      new Notice('无法打开窗口: ' + e.message);
+    }
+  }
+
+  // ===== 同步入口(带完整日志和错误保护) =====
+
+  startKnowledgeBaseSync(selectedKbIds: string[] | null, mode: SyncMode, silent: boolean = false): void {
+    log(`startKnowledgeBaseSync 被调用: mode=${mode}, selectedKbIds=${selectedKbIds ? selectedKbIds.length : 'null'}, silent=${silent}`);
+    log(`apiKey=${!!this.settings.apiKey}, isRunning=${this.syncManager.isRunning()}`);
+
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
+    }
+
+    if (this.syncManager.isRunning()) {
+      new Notice('已有同步任务正在进行,请等待或取消');
+      return;
+    }
+
+    try {
+      if (!silent) {
+        this.progressModal = new SyncProgressModal(this.app, this);
+        this.progressModal.open();
+        log('进度 Modal 已打开');
+      }
+
+      this.syncManager
+        .syncKnowledgeBases(selectedKbIds, mode)
+        .then((result: SyncResult) => {
+          log('同步结果:', result);
+          if (this.progressModal && this.progressModal.opened) {
+            this.progressModal.showResult(result);
+          }
+          this.saveSettings().catch(err => log('保存设置失败:', err));
+        })
+        .catch((e: Error) => {
+          console.error('[IMA] 同步异常(未捕获):', e);
+          new Notice(`同步失败: ${e.message || '未知错误'}`, 8000);
         });
+    } catch (e: any) {
+      // 同步启动本身就抛异常(理论上不应该走到这里)
+      console.error('[IMA] startKnowledgeBaseSync 启动异常:', e);
+      new Notice(`同步启动失败: ${e.message || '未知错误'}`, 8000);
+    }
+  }
 
-        if (resp.json.code !== 0) {
-            throw new Error(`${endpoint}: ${resp.json.msg || '未知错误'}`);
-        }
+  startNotebookSync(noteIds: string[] | null, mode: SyncMode): void {
+    log(`startNotebookSync 被调用: mode=${mode}, noteIds=${noteIds?.length ?? 'null'}`);
 
-        return resp.json.data;
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
+    }
+    if (this.syncManager.isRunning()) {
+      new Notice('已有同步任务正在进行,请等待或取消');
+      return;
     }
 
-    async searchAllKnowledgeBases() {
-        const allKbs: any[] = [];
-        let cursor = '';
+    try {
+      this.progressModal = new SyncProgressModal(this.app, this);
+      this.progressModal.open();
 
-        while (true) {
-            const data = await this.request(this.wikiBaseUrl, 'search_knowledge_base', {
-                query: '',
-                cursor: cursor,
-                limit: 20
-            });
-
-            const kbs = data?.info_list || [];
-            if (kbs.length === 0) break;
-
-            allKbs.push(...kbs);
-
-            if (data.is_end) break;
-            cursor = data.next_cursor || '';
-            if (!cursor) break;
-        }
-
-        return allKbs;
-    }
-
-    async getAllKnowledgeList(kbId: string) {
-        const allItems: any[] = [];
-        let cursor = '';
-
-        while (true) {
-            const data = await this.request(this.wikiBaseUrl, 'get_knowledge_list', {
-                knowledge_base_id: kbId,
-                cursor: cursor,
-                limit: 50
-            });
-
-            const items = data?.knowledge_list || [];
-            if (items.length === 0) break;
-
-            allItems.push(...items);
-
-            if (data.is_end) break;
-            cursor = data.next_cursor || '';
-            if (!cursor) break;
-        }
-
-        return allItems;
-    }
-
-    async exportMedia(mediaId: string) {
-        try {
-            const data = await this.request(this.wikiBaseUrl, 'export_media_for_ima_sandbox', {
-                media_id: mediaId
-            });
-
-            const downloadUrl = data?.media_content_url_info?.url;
-            if (!downloadUrl) return null;
-
-            const resp = await requestUrl({ url: downloadUrl, method: 'GET' });
-            return resp.text;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async getDocContent(docId: string) {
-        try {
-            const data = await this.request(this.noteBaseUrl, 'get_doc_content', {
-                doc_id: docId,
-                target_content_format: 1
-            });
-
-            if (data?.content) return data.content;
-            return null;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async getDocContentWithError(docId: string) {
-        try {
-            const data = await this.request(this.noteBaseUrl, 'get_doc_content', {
-                doc_id: docId,
-                target_content_format: 1
-            });
-
-            if (data?.content) {
-                return { success: true, content: data.content };
-            }
-            return { success: false, error: '内容为空' };
-        } catch (e) {
-            return { success: false, error: e.message };
-        }
-    }
-
-    async exportMediaWithError(mediaId: string) {
-        try {
-            const data = await this.request(this.wikiBaseUrl, 'export_media_for_ima_sandbox', {
-                media_id: mediaId
-            });
-
-            const downloadUrl = data?.media_content_url_info?.url;
-            if (!downloadUrl) {
-                return { success: false, error: '无下载链接' };
-            }
-
-            const resp = await requestUrl({ url: downloadUrl, method: 'GET' });
-            return { success: true, content: resp.text };
-        } catch (e) {
-            return { success: false, error: e.message };
-        }
-    }
-
-    // 笔记本 API
-    async listNotebooks() {
-        const notebooks: any[] = [];
-        let cursor = '0';
-
-        while (true) {
-            try {
-                const data = await this.request(this.noteBaseUrl, 'list_note_by_folder_id', {
-                    cursor: cursor,
-                    limit: 20
-                });
-
-                const items = data?.notes || [];
-                if (items.length === 0) break;
-
-                notebooks.push(...items);
-
-                if (data.is_end) break;
-                cursor = data.next_cursor || '';
-                if (!cursor || cursor === '0') break;
-            } catch (e) {
-                break;
-            }
-        }
-
-        return notebooks;
-    }
-}
-
-class ImaSettingTab extends PluginSettingTab {
-    plugin: ImaPlugin;
-
-    constructor(app: any, plugin: ImaPlugin) {
-        super(app, plugin);
-        this.plugin = plugin;
-    }
-
-    display() {
-        const { containerEl } = this;
-        containerEl.empty();
-
-        containerEl.createEl('h2', { text: 'IMA 同步设置' });
-
-        new Setting(containerEl)
-            .setName('Client ID')
-            .setDesc('已自动配置')
-            .addText(text => text.setValue(this.plugin.settings.clientId));
-
-        new Setting(containerEl)
-            .setName('API Key')
-            .setDesc('从 https://ima.qq.com/agent-interface 获取')
-            .addText(text => {
-                text.inputEl.type = 'password';
-                text.setValue(this.plugin.settings.apiKey);
-                text.onChange(async (value) => {
-                    this.plugin.settings.apiKey = value;
-                    await this.plugin.saveSettings();
-                });
-            });
-
-        new Setting(containerEl)
-            .setName('目标文件夹')
-            .setDesc(`当前: ${this.plugin.settings.targetFolder}`)
-            .addButton(btn => btn.setButtonText('选择文件夹').onClick(() => {
-                new FolderSelectModal(this.app, this.plugin, this).open();
-            }));
-
-        new Setting(containerEl)
-            .setName('同步笔记本')
-            .setDesc('同步你自己的笔记本笔记')
-            .addButton(btn => btn.setButtonText('同步笔记本').onClick(() => {
-                this.plugin.syncNotebookNotes();
-            }));
-
-        new Setting(containerEl)
-            .setName('同步分享链接')
-            .setDesc('输入分享链接，单个同步')
-            .addButton(btn => btn.setButtonText('输入链接').onClick(() => {
-                this.plugin.syncFromShareLink();
-            }));
-
-        new Setting(containerEl)
-            .setName('同步知识库')
-            .setDesc('同步知识库里的笔记（可能权限不足）')
-            .addButton(btn => btn.setButtonText('选择知识库').onClick(() => {
-                new KnowledgeBaseModal(this.app, this.plugin).open();
-            }));
-
-        if (this.plugin.settings.selectedKbs.length > 0) {
-            containerEl.createEl('p', {
-                text: `已选择 ${this.plugin.settings.selectedKbs.length} 个知识库`,
-                cls: 'setting-item-description'
-            });
-        }
-
-        new Setting(containerEl)
-            .setName('全量同步知识库')
-            .setDesc('同步所有已选知识库')
-            .addButton(btn => btn.setButtonText('全量同步').setCta().onClick(() => {
-                this.plugin.syncAll(true);
-            }));
-    }
-}
-
-class FolderSelectModal extends Modal {
-    plugin: ImaPlugin;
-    settingTab: ImaSettingTab;
-
-    constructor(app: any, plugin: ImaPlugin, settingTab: ImaSettingTab) {
-        super(app);
-        this.plugin = plugin;
-        this.settingTab = settingTab;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h2', { text: '选择文件夹' });
-
-        const folders = this.getAvailableFolders();
-        const selectEl = contentEl.createEl('select');
-
-        folders.forEach(folder => {
-            const option = selectEl.createEl('option');
-            option.value = folder;
-            option.textContent = folder || '根目录';
-            if (folder === this.plugin.settings.targetFolder) {
-                option.selected = true;
-            }
+      this.syncManager
+        .syncNotebookNotes(noteIds, mode)
+        .then((result: SyncResult) => {
+          log('笔记本同步结果:', result);
+          if (this.progressModal && this.progressModal.opened) {
+            this.progressModal.showResult(result);
+          }
+          this.saveSettings().catch(err => log('保存设置失败:', err));
+        })
+        .catch((e: Error) => {
+          console.error('[IMA] 笔记本同步异常:', e);
+          new Notice(`同步失败: ${e.message || '未知错误'}`);
         });
+    } catch (e: any) {
+      console.error('[IMA] startNotebookSync 启动异常:', e);
+      new Notice(`同步启动失败: ${e.message || '未知错误'}`);
+    }
+  }
 
-        const btnContainer = contentEl.createDiv();
+  startShareNoteSync(noteId: string): void {
+    log(`startShareNoteSync 被调用: noteId=${noteId}`);
 
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
-        cancelBtn.onclick = () => this.close();
-
-        const saveBtn = btnContainer.createEl('button', { text: '确定', cls: 'mod-cta' });
-        saveBtn.onclick = async () => {
-            this.plugin.settings.targetFolder = selectEl.value;
-            await this.plugin.saveSettings();
-            this.close();
-            new Notice('文件夹已更新');
-            this.settingTab.display();
-        };
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
     }
 
-    getAvailableFolders() {
-        const folders = new Set(['', 'IMA知识库']);
-        this.app.vault.getFiles().forEach(file => {
-            const parts = file.path.split('/').slice(0, -1);
-            let current = '';
-            parts.forEach(part => {
-                current += (current ? '/' : '') + part;
-                folders.add(current);
-            });
+    try {
+      this.progressModal = new SyncProgressModal(this.app, this);
+      this.progressModal.open();
+
+      this.syncManager
+        .syncShareNote(noteId)
+        .then((result: SyncResult) => {
+          log('分享笔记同步结果:', result);
+          if (this.progressModal && this.progressModal.opened) {
+            this.progressModal.showResult(result);
+          }
+        })
+        .catch((e: Error) => {
+          console.error('[IMA] 分享笔记同步异常:', e);
+          new Notice(`同步失败: ${e.message || '未知错误'}`);
         });
-        return Array.from(folders).sort();
+    } catch (e: any) {
+      console.error('[IMA] startShareNoteSync 启动异常:', e);
+      new Notice(`同步启动失败: ${e.message || '未知错误'}`);
+    }
+  }
+
+  // ===== 诊断工具 =====
+
+  async testApiConnection(): Promise<void> {
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
     }
 
-    onClose() {
-        this.contentEl.empty();
+    new Notice('正在测试 API 连接...');
+    log('测试 API 连接...');
+
+    try {
+      this.cache.clearKnowledgeBases();
+      const kbs = await this.api.searchAllKnowledgeBases(true);
+      new Notice(`API 连接正常!共找到 ${kbs.length} 个知识库`);
+      log('API 测试成功, 知识库数量:', kbs.length);
+    } catch (e: any) {
+      const msg = e.message || '';
+      log('API 测试失败:', msg);
+
+      if (msg.includes('401') || msg.includes('403') || msg.toLowerCase().includes('unauthorized')) {
+        new Notice('API Key 无效或已过期,请重新获取', 10000);
+      } else if (msg.includes('429') || msg.toLowerCase().includes('rate') || msg.toLowerCase().includes('limit')) {
+        new Notice('API 被限流,请等 1-2 分钟后重试', 10000);
+      } else if (msg.toLowerCase().includes('network') || msg.toLowerCase().includes('timeout') || msg.toLowerCase().includes('fetch')) {
+        new Notice('网络连接问题: ' + msg, 10000);
+      } else {
+        new Notice('API 连接失败: ' + msg, 10000);
+      }
     }
-}
+  }
 
-class ShareNoteModal extends Modal {
-    plugin: ImaPlugin;
-    initialUrl: string;
-
-    constructor(app: any, plugin: ImaPlugin, initialUrl: string = null) {
-        super(app);
-        this.plugin = plugin;
-        this.initialUrl = initialUrl;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h2', { text: '同步分享链接笔记' });
-
-        contentEl.createEl('p', { text: '粘贴 IMA 分享链接或笔记ID：' });
-
-        const inputEl = contentEl.createEl('input', {
-            type: 'text',
-            placeholder: 'https://ima.qq.com/note/share/_AweNbOP8AufLZwbbFNmOw'
-        });
-        inputEl.style.width = '100%';
-        inputEl.style.marginBottom = '10px';
-
-        if (this.initialUrl) {
-            inputEl.value = this.initialUrl;
-        }
-
-        const btnContainer = contentEl.createDiv();
-
-        const syncBtn = btnContainer.createEl('button', { text: '同步', cls: 'mod-cta' });
-        syncBtn.onclick = async () => {
-            const input = inputEl.value.trim();
-            if (!input) {
-                new Notice('请输入分享链接或笔记ID');
-                return;
-            }
-
-            let noteId = input;
-            const match = input.match(/note\/share\/([^?]+)/);
-            if (match) {
-                noteId = match[1];
-            }
-
-            new Notice('正在获取笔记...');
-            this.close();
-
-            try {
-                const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
-                const content = await api.getDocContent(noteId);
-
-                if (content) {
-                    const filePath = `${this.plugin.settings.targetFolder}/分享笔记/${noteId}.md`;
-                    const frontMatter = `---\nsource: IMA分享\nnote_id: "${noteId}"\nsync_time: "${new Date().toISOString()}"\n---\n\n`;
-                    await this.plugin.saveFile(filePath, frontMatter + content);
-                    new Notice('笔记同步成功！');
-                } else {
-                    new Notice('无法获取笔记内容，可能权限不足');
-                }
-            } catch (e) {
-                new Notice('同步失败: ' + e.message);
-            }
-        };
-
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
-        cancelBtn.onclick = () => this.close();
+  /**
+   * 完整诊断:弹出 Modal 显示详细检测步骤
+   */
+  async runFullDiagnosis(): Promise<void> {
+    if (!this.settings.apiKey) {
+      new Notice('请先在设置中配置 IMA API Key');
+      return;
     }
 
-    onClose() {
-        this.contentEl.empty();
-    }
-}
+    // 用一个临时 Modal 展示诊断结果
+    const diagModal = new (require('obsidian') as any).Modal(this.app);
+    diagModal.onOpen = () => {
+      const { contentEl } = diagModal.contentEl;
+      contentEl.createEl('h2', { text: 'API 连接诊断中...' });
 
-class NotebookNotesModal extends Modal {
-    plugin: ImaPlugin;
-    notebooks: any[];
-
-    constructor(app: any, plugin: ImaPlugin) {
-        super(app);
-        this.plugin = plugin;
-    }
-
-    async onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h2', { text: '加载笔记本...' });
-
-        try {
-            const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
-            this.notebooks = await api.listNotebooks();
-            this.displayNotebooks();
-        } catch (e) {
-            contentEl.empty();
-            contentEl.createEl('h2', { text: '加载失败' });
-            contentEl.createEl('p', { text: '无法获取笔记本列表' });
-        }
-    }
-
-    displayNotebooks() {
-        const { contentEl } = this;
+      diagnoseApiConnection(
+        this.settings.clientId,
+        this.settings.apiKey,
+        this.api,
+      ).then(result => {
         contentEl.empty();
+        contentEl.createEl('h2', { text: '诊断结果' });
 
-        contentEl.createEl('h2', { text: '笔记本笔记' });
-        contentEl.createEl('p', { text: '这是你自己的笔记本笔记，可以正常同步' });
+        const header = contentEl.createDiv();
+        header.style.cssText =
+          'font-size:14px;font-weight:500;margin-bottom:12px;padding:8px;border-radius:6px;' +
+          (result.ok ? 'background:#eaf3de;color:#27500a;' : 'background:#fceebe;color:#7a5900;');
+        header.setText(result.ok ? '✅ ' + result.summary : '❌ ' + result.summary);
 
-        if (!this.notebooks || this.notebooks.length === 0) {
-            contentEl.createEl('p', { text: '未找到笔记本笔记' });
-            return;
+        for (const step of result.steps) {
+          const row = contentEl.createDiv();
+          row.style.cssText = 'padding:6px;border-left:3px solid;margin-bottom:8px;' +
+            (step.status === 'ok' ? 'border-color:#1d9e75;' :
+             step.status === 'warn' ? 'border-color:#ba7517;' :
+             step.status === 'fail' ? 'border-color:#a32d2d;' :
+             'border-color:#888780;');
+
+          row.createSpan({ text: step.status === 'ok' ? '✓' : step.status === 'warn' ? '⚠' : step.status === 'fail' ? '✗' : '—' }).style.fontWeight = 'bold';
+
+          const info = row.createDiv();
+          info.createDiv({ text: step.name }).style.fontWeight = '500';
+          info.createDiv({ text: step.detail }).style.cssText = 'font-size:12px;color:#5f5e5a;';
         }
 
-        const selectedNotes = new Set<string>();
+        const suggestBox = contentEl.createDiv();
+        suggestBox.style.cssText = 'margin-top:12px;padding:8px;background:#f1efe8;border-radius:6px;font-size:12px;line-height:1.6;white-space:pre-wrap;';
+        suggestBox.createDiv({ text: '修复建议:' }).style.fontWeight = 'bold';
+        suggestBox.createDiv({ text: result.suggestion });
 
-        for (const note of this.notebooks) {
-            const noteDiv = contentEl.createDiv();
-            noteDiv.style.marginBottom = '8px';
-
-            const checkbox = noteDiv.createEl('input', { type: 'checkbox' });
-            checkbox.style.marginRight = '8px';
-
-            noteDiv.createEl('span', { text: note.title || '未命名' });
-
-            checkbox.onchange = () => {
-                if (checkbox.checked) {
-                    selectedNotes.add(note.doc_id);
-                } else {
-                    selectedNotes.delete(note.doc_id);
-                }
-            };
-        }
-
-        const btnContainer = contentEl.createDiv();
-        btnContainer.style.marginTop = '20px';
-
-        const selectAllBtn = btnContainer.createEl('button', { text: '全选' });
-        selectAllBtn.onclick = () => {
-            this.notebooks.forEach(n => selectedNotes.add(n.doc_id));
-            this.displayNotebooks();
-        };
-
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
-        cancelBtn.onclick = () => this.close();
-
-        const syncBtn = btnContainer.createEl('button', { text: '同步选中', cls: 'mod-cta' });
-        syncBtn.onclick = async () => {
-            if (selectedNotes.size === 0) {
-                new Notice('请选择要同步的笔记');
-                return;
-            }
-
-            this.close();
-            await this.syncSelectedNotes(Array.from(selectedNotes));
-        };
-    }
-
-    async syncSelectedNotes(noteIds: string[]) {
-        new Notice(`开始同步 ${noteIds.length} 个笔记...`);
-
-        const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
-        let syncedCount = 0;
-
-        for (const noteId of noteIds) {
-            try {
-                const content = await api.getDocContent(noteId);
-                if (content) {
-                    const filePath = `${this.plugin.settings.targetFolder}/我的笔记本/${noteId}.md`;
-                    const frontMatter = `---\nsource: IMA笔记本\ndoc_id: "${noteId}"\nsync_time: "${new Date().toISOString()}"\n---\n\n`;
-                    await this.plugin.saveFile(filePath, frontMatter + content);
-                    syncedCount++;
-                }
-            } catch (e) {
-                console.warn(`跳过: ${noteId}`, e);
-            }
-        }
-
-        new Notice(`笔记本笔记同步完成！同步 ${syncedCount} 个`);
-    }
-
-    onClose() {
-        this.contentEl.empty();
-    }
-}
-
-class KnowledgeBaseModal extends Modal {
-    plugin: ImaPlugin;
-    knowledgeBases: any[];
-
-    constructor(app: any, plugin: ImaPlugin) {
-        super(app);
-        this.plugin = plugin;
-    }
-
-    async onOpen() {
-        this.contentEl.createEl('h2', { text: '加载中...' });
-
-        try {
-            const api = new ImaApi(this.plugin.settings.clientId, this.plugin.settings.apiKey);
-            this.knowledgeBases = await api.searchAllKnowledgeBases();
-            this.displayKbs();
-        } catch (e) {
-            this.contentEl.empty();
-            this.contentEl.createEl('h2', { text: '加载失败' });
-            this.contentEl.createEl('p', { text: '请检查 API Key 是否正确' });
-        }
-    }
-
-    displayKbs() {
-        const { contentEl } = this;
+        contentEl.createEl('button', { text: '关闭', cls: 'mod-cta' }).onclick = () => diagModal.close();
+      }).catch(e => {
         contentEl.empty();
+        contentEl.createEl('h2', { text: '诊断异常' });
+        contentEl.createEl('p', { text: String(e.message || e) });
+      });
+    };
+    diagModal.open();
+  }
 
-        contentEl.createEl('h2', { text: '选择要同步的知识库' });
-        contentEl.createEl('p', { text: '⚠️ 注意：知识库里的笔记可能需要权限才能读取' });
+  showDebugInfo(): void {
+    const lines: string[] = [];
+    lines.push(`═══ IMA 插件调试信息 ═══`);
+    lines.push(`版本: 2.0.0`);
+    lines.push(`API Key: ${this.settings.apiKey ? '已配置(' + this.settings.apiKey.substring(0, 8) + '...)' : '❌ 未配置'}`);
+    lines.push(`目标文件夹: ${this.settings.targetFolder}`);
+    lines.push(`已选知识库: ${this.settings.selectedKbs.length} 个`);
+    lines.push(`上次同步: ${this.settings.lastSyncTime ? new Date(this.settings.lastSyncTime).toLocaleString('zh-CN') : '从未'}`);
+    lines.push(`同步状态: ${this.syncManager.isRunning() ? '⏳ 进行中' : '✓ 空闲'}`);
+    lines.push(`QPS 限制: ${this.settings.qpsLimit}`);
+    lines.push(`缓存 TTL: ${this.settings.cacheTtlMinutes} 分钟`);
+    lines.push(`最大重试: ${this.settings.maxRetries}`);
+    lines.push(`请求超时: ${this.settings.requestTimeoutMs / 1000}s`);
+    const stats = this.cache.getStats();
+    lines.push(`缓存项数: ${stats.totalEntries}`);
+    lines.push(`════════════════════`);
 
-        if (!this.knowledgeBases || this.knowledgeBases.length === 0) {
-            contentEl.createEl('p', { text: '未找到可用知识库' });
-            return;
-        }
-
-        const selectedKbs = new Set(this.plugin.settings.selectedKbs);
-
-        for (const kb of this.knowledgeBases) {
-            const kbDiv = contentEl.createDiv();
-            kbDiv.style.marginBottom = '8px';
-            kbDiv.style.padding = '8px';
-            kbDiv.style.borderBottom = '1px solid #eee';
-
-            const checkbox = kbDiv.createEl('input', { type: 'checkbox' });
-            checkbox.checked = selectedKbs.has(kb.kb_id);
-            checkbox.style.marginRight = '8px';
-
-            const label = kbDiv.createEl('span', { text: ` ${kb.kb_name} ` });
-            label.style.fontWeight = 'bold';
-
-            const roleLabel = kbDiv.createEl('span', {
-                text: ` [${kb.role_type}]`,
-                cls: 'setting-item-description'
-            });
-
-            if (kb.kb_desc) {
-                kbDiv.createEl('p', { text: kb.kb_desc, cls: 'setting-item-description' });
-            }
-
-            checkbox.onchange = () => {
-                if (checkbox.checked) {
-                    selectedKbs.add(kb.kb_id);
-                } else {
-                    selectedKbs.delete(kb.kb_id);
-                }
-            };
-        }
-
-        const btnContainer = contentEl.createDiv();
-        btnContainer.style.marginTop = '20px';
-
-        const selectAllBtn = btnContainer.createEl('button', { text: '全选' });
-        selectAllBtn.onclick = () => {
-            this.knowledgeBases.forEach(kb => selectedKbs.add(kb.kb_id));
-            this.displayKbs();
-        };
-
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
-        cancelBtn.onclick = () => this.close();
-
-        const syncBtn = btnContainer.createEl('button', { text: '开始同步', cls: 'mod-cta' });
-        syncBtn.onclick = async () => {
-            const selected = Array.from(selectedKbs);
-            if (selected.length === 0) {
-                new Notice('请至少选择一个知识库');
-                return;
-            }
-
-            this.plugin.settings.selectedKbs = selected;
-            this.plugin.settings.selectedNotes = {};
-            await this.plugin.saveSettings();
-            this.close();
-            this.plugin.syncAll(true, selected);
-        };
-    }
-
-    onClose() {
-        this.contentEl.empty();
-    }
+    const noticeText = lines.join('\n');
+    new Notice(noticeText, 20000);
+    console.log(noticeText);
+  }
 }
-
-export default ImaPlugin;
