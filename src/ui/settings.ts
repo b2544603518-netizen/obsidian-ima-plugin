@@ -21,8 +21,15 @@ export class ImaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Client ID')
-      .setDesc('已自动配置')
-      .addText(text => text.setValue(this.plugin.settings.clientId).setDisabled(true));
+      .setDesc('从 https://ima.qq.com/agent-interface 获取,每个用户不同,必须填写自己的')
+      .addText(text => {
+        text.setPlaceholder('输入你的 Client ID');
+        text.setValue(this.plugin.settings.clientId);
+        text.onChange(async value => {
+          this.plugin.settings.clientId = value;
+          await this.plugin.saveSettings();
+        });
+      });
 
     new Setting(containerEl)
       .setName('API Key')

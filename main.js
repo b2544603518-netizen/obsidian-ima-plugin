@@ -1638,7 +1638,14 @@ var ImaSettingTab = class extends import_obsidian6.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "IMA \u540C\u6B65\u8BBE\u7F6E" });
     containerEl.createEl("h3", { text: "\u57FA\u7840\u914D\u7F6E" });
-    new import_obsidian6.Setting(containerEl).setName("Client ID").setDesc("\u5DF2\u81EA\u52A8\u914D\u7F6E").addText((text) => text.setValue(this.plugin.settings.clientId).setDisabled(true));
+    new import_obsidian6.Setting(containerEl).setName("Client ID").setDesc("\u4ECE https://ima.qq.com/agent-interface \u83B7\u53D6,\u6BCF\u4E2A\u7528\u6237\u4E0D\u540C,\u5FC5\u987B\u586B\u5199\u81EA\u5DF1\u7684").addText((text) => {
+      text.setPlaceholder("\u8F93\u5165\u4F60\u7684 Client ID");
+      text.setValue(this.plugin.settings.clientId);
+      text.onChange((value) => __async(this, null, function* () {
+        this.plugin.settings.clientId = value;
+        yield this.plugin.saveSettings();
+      }));
+    });
     new import_obsidian6.Setting(containerEl).setName("API Key").setDesc("\u4ECE https://ima.qq.com/agent-interface \u83B7\u53D6(\u8FC7\u671F\u540E\u9700\u91CD\u65B0\u83B7\u53D6)").addText((text) => {
       text.inputEl.type = "password";
       text.setValue(this.plugin.settings.apiKey);
@@ -1932,7 +1939,7 @@ var SyncProgressModal = class extends import_obsidian7.Modal {
 
 // src/main.ts
 var DEFAULT_SETTINGS = {
-  clientId: "4500bc3e9924560abc18944655cfa0d3",
+  clientId: "",
   apiKey: "",
   targetFolder: "IMA\u77E5\u8BC6\u5E93",
   lastSyncTime: "",
@@ -2126,9 +2133,9 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
     }
   }
   openKnowledgeBaseModal() {
-    log3("\u6253\u5F00\u77E5\u8BC6\u5E93\u9009\u62E9 Modal, apiKey=", !!this.settings.apiKey);
-    if (!this.settings.apiKey) {
-      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+    log3("\u6253\u5F00\u77E5\u8BC6\u5E93\u9009\u62E9 Modal, apiKey=", !!this.settings.apiKey, ", clientId=", !!this.settings.clientId);
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
     try {
@@ -2140,9 +2147,9 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
     }
   }
   openNotebookNotesModal() {
-    log3("\u6253\u5F00\u7B14\u8BB0\u672C\u540C\u6B65 Modal, apiKey=", !!this.settings.apiKey);
-    if (!this.settings.apiKey) {
-      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+    log3("\u6253\u5F00\u7B14\u8BB0\u672C\u540C\u6B65 Modal, apiKey=", !!this.settings.apiKey, ", clientId=", !!this.settings.clientId);
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
     try {
@@ -2155,8 +2162,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   startKnowledgeBaseSync(selectedKbIds, mode, silent = false) {
     log3(`startKnowledgeBaseSync \u88AB\u8C03\u7528: mode=${mode}, selectedKbIds=${selectedKbIds ? selectedKbIds.length : "null"}, silent=${silent}`);
     log3(`apiKey=${!!this.settings.apiKey}, isRunning=${this.syncManager.isRunning()}`);
-    if (!this.settings.apiKey) {
-      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
     if (this.syncManager.isRunning()) {
@@ -2187,8 +2194,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   startNotebookSync(noteIds, mode) {
     var _a;
     log3(`startNotebookSync \u88AB\u8C03\u7528: mode=${mode}, noteIds=${(_a = noteIds == null ? void 0 : noteIds.length) != null ? _a : "null"}`);
-    if (!this.settings.apiKey) {
-      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
     if (this.syncManager.isRunning()) {
@@ -2215,8 +2222,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   }
   startShareNoteSync(noteId) {
     log3(`startShareNoteSync \u88AB\u8C03\u7528: noteId=${noteId}`);
-    if (!this.settings.apiKey) {
-      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
     try {
@@ -2238,8 +2245,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   }
   testApiConnection() {
     return __async(this, null, function* () {
-      if (!this.settings.apiKey) {
-        new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+      if (!this.settings.clientId || !this.settings.apiKey) {
+        new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
         return;
       }
       new import_obsidian8.Notice("\u6B63\u5728\u6D4B\u8BD5 API \u8FDE\u63A5...");
@@ -2266,8 +2273,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   }
   runFullDiagnosis() {
     return __async(this, null, function* () {
-      if (!this.settings.apiKey) {
-        new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E IMA API Key");
+      if (!this.settings.clientId || !this.settings.apiKey) {
+        new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
         return;
       }
       const diagModal = new (require("obsidian")).Modal(this.app);
@@ -2306,6 +2313,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
     const lines = [];
     lines.push(`\u2550\u2550\u2550 IMA \u63D2\u4EF6\u8C03\u8BD5\u4FE1\u606F \u2550\u2550\u2550`);
     lines.push(`\u7248\u672C: 2.0.0`);
+    lines.push(`Client ID: ${this.settings.clientId ? "\u5DF2\u914D\u7F6E(" + this.settings.clientId.substring(0, 8) + "...)" : "\u274C \u672A\u914D\u7F6E"}`);
     lines.push(`API Key: ${this.settings.apiKey ? "\u5DF2\u914D\u7F6E(" + this.settings.apiKey.substring(0, 8) + "...)" : "\u274C \u672A\u914D\u7F6E"}`);
     lines.push(`\u76EE\u6807\u6587\u4EF6\u5939: ${this.settings.targetFolder}`);
     lines.push(`\u5DF2\u9009\u77E5\u8BC6\u5E93: ${this.settings.selectedKbs.length} \u4E2A`);

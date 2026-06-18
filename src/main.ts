@@ -13,7 +13,7 @@ import { diagnoseApiConnection } from './utils/api-diagnostic';
 import { PluginSettings, SyncMode, SyncProgress, SyncResult } from './types';
 
 const DEFAULT_SETTINGS: PluginSettings = {
-  clientId: '4500bc3e9924560abc18944655cfa0d3',
+  clientId: '',
   apiKey: '',
   targetFolder: 'IMA知识库',
   lastSyncTime: '',
@@ -225,9 +225,9 @@ export default class ImaPlugin extends Plugin {
   // ===== UI 入口 =====
 
   openKnowledgeBaseModal(): void {
-    log('打开知识库选择 Modal, apiKey=', !!this.settings.apiKey);
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    log('打开知识库选择 Modal, apiKey=', !!this.settings.apiKey, ', clientId=', !!this.settings.clientId);
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
     try {
@@ -240,9 +240,9 @@ export default class ImaPlugin extends Plugin {
   }
 
   openNotebookNotesModal(): void {
-    log('打开笔记本同步 Modal, apiKey=', !!this.settings.apiKey);
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    log('打开笔记本同步 Modal, apiKey=', !!this.settings.apiKey, ', clientId=', !!this.settings.clientId);
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
     try {
@@ -259,8 +259,8 @@ export default class ImaPlugin extends Plugin {
     log(`startKnowledgeBaseSync 被调用: mode=${mode}, selectedKbIds=${selectedKbIds ? selectedKbIds.length : 'null'}, silent=${silent}`);
     log(`apiKey=${!!this.settings.apiKey}, isRunning=${this.syncManager.isRunning()}`);
 
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
 
@@ -299,8 +299,8 @@ export default class ImaPlugin extends Plugin {
   startNotebookSync(noteIds: string[] | null, mode: SyncMode): void {
     log(`startNotebookSync 被调用: mode=${mode}, noteIds=${noteIds?.length ?? 'null'}`);
 
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
     if (this.syncManager.isRunning()) {
@@ -334,8 +334,8 @@ export default class ImaPlugin extends Plugin {
   startShareNoteSync(noteId: string): void {
     log(`startShareNoteSync 被调用: noteId=${noteId}`);
 
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
 
@@ -364,8 +364,8 @@ export default class ImaPlugin extends Plugin {
   // ===== 诊断工具 =====
 
   async testApiConnection(): Promise<void> {
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
 
@@ -397,8 +397,8 @@ export default class ImaPlugin extends Plugin {
    * 完整诊断:弹出 Modal 显示详细检测步骤
    */
   async runFullDiagnosis(): Promise<void> {
-    if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 IMA API Key');
+    if (!this.settings.clientId || !this.settings.apiKey) {
+      new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
 
@@ -456,6 +456,7 @@ export default class ImaPlugin extends Plugin {
     const lines: string[] = [];
     lines.push(`═══ IMA 插件调试信息 ═══`);
     lines.push(`版本: 2.0.0`);
+    lines.push(`Client ID: ${this.settings.clientId ? '已配置(' + this.settings.clientId.substring(0, 8) + '...)' : '❌ 未配置'}`);
     lines.push(`API Key: ${this.settings.apiKey ? '已配置(' + this.settings.apiKey.substring(0, 8) + '...)' : '❌ 未配置'}`);
     lines.push(`目标文件夹: ${this.settings.targetFolder}`);
     lines.push(`已选知识库: ${this.settings.selectedKbs.length} 个`);
