@@ -101,6 +101,10 @@ var ImaApi = class {
     if (opts.requestTimeoutMs !== void 0)
       this.requestTimeoutMs = opts.requestTimeoutMs;
   }
+  updateCredentials(clientId, apiKey) {
+    this.clientId = clientId.trim();
+    this.apiKey = apiKey.trim();
+  }
   throttle() {
     return __async(this, null, function* () {
       const now = Date.now();
@@ -2097,6 +2101,8 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
     return __async(this, null, function* () {
       const loaded = yield this.loadData();
       this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+      this.settings.clientId = (this.settings.clientId || "").trim();
+      this.settings.apiKey = (this.settings.apiKey || "").trim();
       if (!this.settings.selectedKbs)
         this.settings.selectedKbs = [];
       if (!this.settings.selectedNotes)
@@ -2119,6 +2125,16 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
   }
   saveSettings() {
     return __async(this, null, function* () {
+      this.settings.clientId = (this.settings.clientId || "").trim();
+      this.settings.apiKey = (this.settings.apiKey || "").trim();
+      if (this.api) {
+        this.api.updateCredentials(this.settings.clientId, this.settings.apiKey);
+        this.api.configure({
+          qpsLimit: this.settings.qpsLimit,
+          maxRetries: this.settings.maxRetries,
+          requestTimeoutMs: this.settings.requestTimeoutMs
+        });
+      }
       this.settings.cache = this.cache.export();
       yield this.saveData(this.settings);
     });
