@@ -1,4 +1,4 @@
-import { App, Notice } from 'obsidian';
+import { App, Notice, TFile, normalizePath } from 'obsidian';
 import { ImaApi } from '../api/ima-api';
 import { CacheManager } from './cache';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../types';
 import {
   buildFrontmatter,
+  ensureFolderExists,
   listMarkdownFilesRecursive,
   sanitizeFileName,
   saveMarkdownFile,
@@ -88,6 +89,43 @@ export class SyncManager {
 
   private checkCancel(): boolean {
     return this.cancelRequested;
+  }
+
+  private buildKnowledgeItemPath(kb: KnowledgeBase, item: KnowledgeItem): string {
+    const kbFolder = sanitizeFileName(kb.kb_name || '未知知识库');
+    const folderSegments = (item.folderPath || '')
+      .split('/')
+      .map(segment => sanitizeFileName(segment))
+      .filter(segment => segment.length > 0);
+    const safeTitle = sanitizeFileName(item.title || '未命名');
+    return [
+      this.settings.targetFolder,
+      kbFolder,
+      ...folderSegments,
+      `${safeTitle}.md`,
+    ].filter(segment => segment.length > 0).join('/');
+  }
+
+  private async moveExistingFileToExpectedPath(
+    currentPath: string,
+    expectedPath: string
+  ): Promise<boolean> {
+    const normalizedCurrent = normalizePath(currentPath);
+    const normalizedExpected = normalizePath(expectedPath);
+    if (normalizedCurrent === normalizedExpected) return false;
+
+    const currentFile = this.app.vault.getAbstractFileByPath(normalizedCurrent);
+    if (!(currentFile instanceof TFile)) return false;
+
+    const existingTarget = this.app.vault.getAbstractFileByPath(normalizedExpected);
+    if (existingTarget && existingTarget !== currentFile) return false;
+
+    const targetFolder = normalizedExpected.split('/').slice(0, -1).join('/');
+    if (targetFolder) {
+      await ensureFolderExists(this.app, targetFolder);
+    }
+    await this.app.vault.rename(currentFile, normalizedExpected);
+    return true;
   }
 
   /**
@@ -301,15 +339,15 @@ export class SyncManager {
             cancelled: false,
           });
 
-          const safeTitle = sanitizeFileName(title);
-          const filePath = `${this.settings.targetFolder}/${kb.kb_name}/${safeTitle}.md`;
+          const filePath = this.buildKnowledgeItemPath(kb, item);
 
           // 增量判断
           if (mode === 'incremental') {
             const local = localIndex.get(item.media_id);
             if (local) {
+              const moved = await this.moveExistingFileToExpectedPath(local.path, filePath);
               result.skipped++;
-              log(`  跳过(已存在): ${title}`);
+              log(moved ? `  移动到目录结构并跳过(已存在): ${title}` : `  跳过(已存在): ${title}`);
               this.emit({
                 total: totalItems,
                 current: processed,
@@ -334,6 +372,7 @@ export class SyncManager {
                 source: 'IMA知识库',
                 kb_name: kb.kb_name || '未知',
                 title: title,
+                folder_path: item.folderPath || '',
                 media_id: item.media_id,
                 media_type: item.media_type,
                 sync_time: new Date().toISOString(),
