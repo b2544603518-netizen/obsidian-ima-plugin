@@ -158,6 +158,37 @@ export class SyncManager {
       } else if (this.settings.selectedKbs.length > 0) {
         const idSet = new Set(this.settings.selectedKbs);
         targetKbs = allKbs.filter(kb => idSet.has(kb.kb_id));
+
+        // 防护:检测 selectedKbs 里的 kb_id 是否在当前账号的知识库列表里
+        // 场景:别人误用了你的 data.json,selectedKbs 里是你的 kb_id,他账号里没有
+        if (targetKbs.length === 0) {
+          log(`⚠️ selectedKbs 里有 ${this.settings.selectedKbs.length} 个 kb_id,但当前账号一个都找不到`);
+          log(`  可能原因: 1) 误用了别人的 data.json  2) 知识库已被删除  3) 权限被移除`);
+          new Notice(
+            '⚠️ 已选知识库在当前账号下找不到。\n' +
+            '可能原因:误用了他人的 data.json,或知识库已被删除。\n' +
+            '已自动清空选择,请重新「选择知识库同步」勾选你自己的知识库。',
+            10000
+          );
+          // 自动清空失效的 selectedKbs,避免下次还报错
+          this.settings.selectedKbs = [];
+          // 同时清掉可能失效的缓存
+          this.cache.clearAll();
+          return result;
+        }
+
+        // 部分失效:有些 kb_id 找得到,有些找不到
+        if (targetKbs.length < this.settings.selectedKbs.length) {
+          const foundIds = new Set(targetKbs.map(kb => kb.kb_id));
+          const missingIds = this.settings.selectedKbs.filter(id => !foundIds.has(id));
+          log(`⚠️ ${missingIds.length} 个已选知识库在当前账号下找不到,自动剔除`);
+          this.settings.selectedKbs = targetKbs.map(kb => kb.kb_id);
+          new Notice(
+            `⚠️ ${missingIds.length} 个已选知识库无权限访问(可能是别人的),已自动剔除。\n` +
+            `本次只同步剩余 ${targetKbs.length} 个。`,
+            8000
+          );
+        }
       } else {
         targetKbs = allKbs;
       }
@@ -165,7 +196,7 @@ export class SyncManager {
       log(`目标知识库: ${targetKbs.length} 个`);
 
       if (targetKbs.length === 0) {
-        new Notice('❌ 未找到已选知识库。请先在"选择知识库"中勾选要同步的知识库。', 8000);
+        new Notice('❌ 未找到可同步的知识库。\n请先用「选择知识库同步」命令勾选你有权限的知识库。', 8000);
         return result;
       }
 

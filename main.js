@@ -742,12 +742,28 @@ var SyncManager = class {
         } else if (this.settings.selectedKbs.length > 0) {
           const idSet = new Set(this.settings.selectedKbs);
           targetKbs = allKbs.filter((kb) => idSet.has(kb.kb_id));
+          if (targetKbs.length === 0) {
+            log2(`\u26A0\uFE0F selectedKbs \u91CC\u6709 ${this.settings.selectedKbs.length} \u4E2A kb_id,\u4F46\u5F53\u524D\u8D26\u53F7\u4E00\u4E2A\u90FD\u627E\u4E0D\u5230`);
+            log2(`  \u53EF\u80FD\u539F\u56E0: 1) \u8BEF\u7528\u4E86\u522B\u4EBA\u7684 data.json  2) \u77E5\u8BC6\u5E93\u5DF2\u88AB\u5220\u9664  3) \u6743\u9650\u88AB\u79FB\u9664`);
+            new import_obsidian3.Notice("\u26A0\uFE0F \u5DF2\u9009\u77E5\u8BC6\u5E93\u5728\u5F53\u524D\u8D26\u53F7\u4E0B\u627E\u4E0D\u5230\u3002\n\u53EF\u80FD\u539F\u56E0:\u8BEF\u7528\u4E86\u4ED6\u4EBA\u7684 data.json,\u6216\u77E5\u8BC6\u5E93\u5DF2\u88AB\u5220\u9664\u3002\n\u5DF2\u81EA\u52A8\u6E05\u7A7A\u9009\u62E9,\u8BF7\u91CD\u65B0\u300C\u9009\u62E9\u77E5\u8BC6\u5E93\u540C\u6B65\u300D\u52FE\u9009\u4F60\u81EA\u5DF1\u7684\u77E5\u8BC6\u5E93\u3002", 1e4);
+            this.settings.selectedKbs = [];
+            this.cache.clearAll();
+            return result;
+          }
+          if (targetKbs.length < this.settings.selectedKbs.length) {
+            const foundIds = new Set(targetKbs.map((kb) => kb.kb_id));
+            const missingIds = this.settings.selectedKbs.filter((id) => !foundIds.has(id));
+            log2(`\u26A0\uFE0F ${missingIds.length} \u4E2A\u5DF2\u9009\u77E5\u8BC6\u5E93\u5728\u5F53\u524D\u8D26\u53F7\u4E0B\u627E\u4E0D\u5230,\u81EA\u52A8\u5254\u9664`);
+            this.settings.selectedKbs = targetKbs.map((kb) => kb.kb_id);
+            new import_obsidian3.Notice(`\u26A0\uFE0F ${missingIds.length} \u4E2A\u5DF2\u9009\u77E5\u8BC6\u5E93\u65E0\u6743\u9650\u8BBF\u95EE(\u53EF\u80FD\u662F\u522B\u4EBA\u7684),\u5DF2\u81EA\u52A8\u5254\u9664\u3002
+\u672C\u6B21\u53EA\u540C\u6B65\u5269\u4F59 ${targetKbs.length} \u4E2A\u3002`, 8e3);
+          }
         } else {
           targetKbs = allKbs;
         }
         log2(`\u76EE\u6807\u77E5\u8BC6\u5E93: ${targetKbs.length} \u4E2A`);
         if (targetKbs.length === 0) {
-          new import_obsidian3.Notice('\u274C \u672A\u627E\u5230\u5DF2\u9009\u77E5\u8BC6\u5E93\u3002\u8BF7\u5148\u5728"\u9009\u62E9\u77E5\u8BC6\u5E93"\u4E2D\u52FE\u9009\u8981\u540C\u6B65\u7684\u77E5\u8BC6\u5E93\u3002', 8e3);
+          new import_obsidian3.Notice("\u274C \u672A\u627E\u5230\u53EF\u540C\u6B65\u7684\u77E5\u8BC6\u5E93\u3002\n\u8BF7\u5148\u7528\u300C\u9009\u62E9\u77E5\u8BC6\u5E93\u540C\u6B65\u300D\u547D\u4EE4\u52FE\u9009\u4F60\u6709\u6743\u9650\u7684\u77E5\u8BC6\u5E93\u3002", 8e3);
           return result;
         }
         new import_obsidian3.Notice(`\u5F00\u59CB${mode === "incremental" ? "\u589E\u91CF" : "\u5168\u91CF"}\u540C\u6B65 ${targetKbs.length} \u4E2A\u77E5\u8BC6\u5E93...`, 4e3);
