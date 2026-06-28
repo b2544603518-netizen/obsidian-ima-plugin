@@ -1566,7 +1566,7 @@ var ShareNoteModal = class extends import_obsidian5.Modal {
       if (match)
         noteId = match[1];
       if (!noteId) {
-        new Note("\u65E0\u6CD5\u4ECE\u8F93\u5165\u4E2D\u89E3\u6790\u51FA\u7B14\u8BB0 ID");
+        new import_obsidian5.Notice("\u65E0\u6CD5\u4ECE\u8F93\u5165\u4E2D\u89E3\u6790\u51FA\u7B14\u8BB0 ID");
         return;
       }
       this.close();

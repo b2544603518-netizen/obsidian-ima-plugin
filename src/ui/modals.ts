@@ -426,7 +426,7 @@ export class ShareNoteModal extends Modal {
 
       // 验证非空
       if (!noteId) {
-        new Note('无法从输入中解析出笔记 ID');
+        new Notice('无法从输入中解析出笔记 ID');
         return;
       }
 
