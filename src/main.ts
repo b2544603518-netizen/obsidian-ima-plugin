@@ -230,6 +230,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
     try {
       const modal = new KnowledgeBaseModal(this.app, this);
       modal.open();
@@ -245,6 +246,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
     try {
       new NotebookNotesModal(this.app, this).open();
     } catch (e: any) {
@@ -255,6 +257,21 @@ export default class ImaPlugin extends Plugin {
 
   // ===== 同步入口(带完整日志和错误保护) =====
 
+  /**
+   * 防御性同步:确保 api 实例的 clientId/apiKey 与 settings 一致
+   * 修复 v2.2.2 之前的 bug:用户在设置里改了凭证,但 api 实例还是旧的空值
+   */
+  private syncApiCredentials(): void {
+    if (this.api.clientId !== this.settings.clientId) {
+      log(`检测到 clientId 变更,同步到 api 实例`);
+      this.api.configure({ clientId: this.settings.clientId });
+    }
+    if (this.api.apiKey !== this.settings.apiKey) {
+      log(`检测到 apiKey 变更,同步到 api 实例`);
+      this.api.configure({ apiKey: this.settings.apiKey });
+    }
+  }
+
   startKnowledgeBaseSync(selectedKbIds: string[] | null, mode: SyncMode, silent: boolean = false): void {
     log(`startKnowledgeBaseSync 被调用: mode=${mode}, selectedKbIds=${selectedKbIds ? selectedKbIds.length : 'null'}, silent=${silent}`);
     log(`apiKey=${!!this.settings.apiKey}, isRunning=${this.syncManager.isRunning()}`);
@@ -263,6 +280,9 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+
+    // 关键:确保 api 实例用最新的凭证
+    this.syncApiCredentials();
 
     if (this.syncManager.isRunning()) {
       new Notice('已有同步任务正在进行,请等待或取消');
@@ -303,6 +323,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
     if (this.syncManager.isRunning()) {
       new Notice('已有同步任务正在进行,请等待或取消');
       return;
@@ -338,6 +359,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
 
     try {
       this.progressModal = new SyncProgressModal(this.app, this);
@@ -368,6 +390,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
 
     new Notice('正在测试 API 连接...');
     log('测试 API 连接...');
@@ -401,6 +424,7 @@ export default class ImaPlugin extends Plugin {
       new Notice('请先在设置中配置 Client ID 和 API Key');
       return;
     }
+    this.syncApiCredentials();
 
     // 用一个临时 Modal 展示诊断结果
     const diagModal = new (require('obsidian') as any).Modal(this.app);

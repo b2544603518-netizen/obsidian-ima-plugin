@@ -92,6 +92,10 @@ var ImaApi = class {
     this.minIntervalMs = Math.ceil(1e3 / this.qpsLimit);
   }
   configure(opts) {
+    if (opts.clientId !== void 0)
+      this.clientId = opts.clientId;
+    if (opts.apiKey !== void 0)
+      this.apiKey = opts.apiKey;
     if (opts.qpsLimit !== void 0) {
       this.qpsLimit = opts.qpsLimit;
       this.minIntervalMs = Math.ceil(1e3 / this.qpsLimit);
@@ -1659,6 +1663,7 @@ var ImaSettingTab = class extends import_obsidian6.PluginSettingTab {
       text.setValue(this.plugin.settings.clientId);
       text.onChange((value) => __async(this, null, function* () {
         this.plugin.settings.clientId = value;
+        this.plugin.api.configure({ clientId: value });
         yield this.plugin.saveSettings();
       }));
     });
@@ -1667,6 +1672,7 @@ var ImaSettingTab = class extends import_obsidian6.PluginSettingTab {
       text.setValue(this.plugin.settings.apiKey);
       text.onChange((value) => __async(this, null, function* () {
         this.plugin.settings.apiKey = value;
+        this.plugin.api.configure({ apiKey: value });
         yield this.plugin.saveSettings();
       }));
     }).addButton((btn) => {
@@ -2154,6 +2160,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
       new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
+    this.syncApiCredentials();
     try {
       const modal = new KnowledgeBaseModal(this.app, this);
       modal.open();
@@ -2168,11 +2175,22 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
       new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
+    this.syncApiCredentials();
     try {
       new NotebookNotesModal(this.app, this).open();
     } catch (e) {
       console.error("[IMA] \u6253\u5F00\u7B14\u8BB0\u672C Modal \u5F02\u5E38:", e);
       new import_obsidian8.Notice("\u65E0\u6CD5\u6253\u5F00\u7A97\u53E3: " + e.message);
+    }
+  }
+  syncApiCredentials() {
+    if (this.api.clientId !== this.settings.clientId) {
+      log3(`\u68C0\u6D4B\u5230 clientId \u53D8\u66F4,\u540C\u6B65\u5230 api \u5B9E\u4F8B`);
+      this.api.configure({ clientId: this.settings.clientId });
+    }
+    if (this.api.apiKey !== this.settings.apiKey) {
+      log3(`\u68C0\u6D4B\u5230 apiKey \u53D8\u66F4,\u540C\u6B65\u5230 api \u5B9E\u4F8B`);
+      this.api.configure({ apiKey: this.settings.apiKey });
     }
   }
   startKnowledgeBaseSync(selectedKbIds, mode, silent = false) {
@@ -2182,6 +2200,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
       new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
+    this.syncApiCredentials();
     if (this.syncManager.isRunning()) {
       new import_obsidian8.Notice("\u5DF2\u6709\u540C\u6B65\u4EFB\u52A1\u6B63\u5728\u8FDB\u884C,\u8BF7\u7B49\u5F85\u6216\u53D6\u6D88");
       return;
@@ -2214,6 +2233,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
       new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
+    this.syncApiCredentials();
     if (this.syncManager.isRunning()) {
       new import_obsidian8.Notice("\u5DF2\u6709\u540C\u6B65\u4EFB\u52A1\u6B63\u5728\u8FDB\u884C,\u8BF7\u7B49\u5F85\u6216\u53D6\u6D88");
       return;
@@ -2242,6 +2262,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
       new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
       return;
     }
+    this.syncApiCredentials();
     try {
       this.progressModal = new SyncProgressModal(this.app, this);
       this.progressModal.open();
@@ -2265,6 +2286,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
         new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
         return;
       }
+      this.syncApiCredentials();
       new import_obsidian8.Notice("\u6B63\u5728\u6D4B\u8BD5 API \u8FDE\u63A5...");
       log3("\u6D4B\u8BD5 API \u8FDE\u63A5...");
       try {
@@ -2293,6 +2315,7 @@ var ImaPlugin = class extends import_obsidian8.Plugin {
         new import_obsidian8.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E Client ID \u548C API Key");
         return;
       }
+      this.syncApiCredentials();
       const diagModal = new (require("obsidian")).Modal(this.app);
       diagModal.onOpen = () => {
         const { contentEl } = diagModal.contentEl;

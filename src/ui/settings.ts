@@ -27,6 +27,8 @@ export class ImaSettingTab extends PluginSettingTab {
         text.setValue(this.plugin.settings.clientId);
         text.onChange(async value => {
           this.plugin.settings.clientId = value;
+          // 关键:同步更新 api 实例,否则改了设置但 api 还用旧的空值
+          this.plugin.api.configure({ clientId: value });
           await this.plugin.saveSettings();
         });
       });
@@ -39,6 +41,8 @@ export class ImaSettingTab extends PluginSettingTab {
         text.setValue(this.plugin.settings.apiKey);
         text.onChange(async value => {
           this.plugin.settings.apiKey = value;
+          // 关键:同步更新 api 实例,否则改了设置但 api 还用旧的空值
+          this.plugin.api.configure({ apiKey: value });
           await this.plugin.saveSettings();
         });
       })

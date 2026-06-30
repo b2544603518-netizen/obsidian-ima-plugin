@@ -61,7 +61,9 @@ export class ImaApi {
     this.minIntervalMs = Math.ceil(1000 / this.qpsLimit);
   }
 
-  configure(opts: { qpsLimit?: number; maxRetries?: number; requestTimeoutMs?: number }) {
+  configure(opts: { clientId?: string; apiKey?: string; qpsLimit?: number; maxRetries?: number; requestTimeoutMs?: number }) {
+    if (opts.clientId !== undefined) this.clientId = opts.clientId;
+    if (opts.apiKey !== undefined) this.apiKey = opts.apiKey;
     if (opts.qpsLimit !== undefined) {
       this.qpsLimit = opts.qpsLimit;
       this.minIntervalMs = Math.ceil(1000 / this.qpsLimit);
