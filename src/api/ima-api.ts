@@ -108,6 +108,11 @@ export class ImaApi {
    * 带节流 + 重试的核心请求方法
    */
   private async request(baseUrl: string, endpoint: string, data: any = {}): Promise<any> {
+    if (!this.clientId || !this.apiKey) {
+      throw new Error(
+        Client ID 或 API Key 未配置,请在 Obsidian 设置 → IMA Sync 中填写自己的凭证(从 https://ima.qq.com/agent-interface 获取)
+      );
+    }
     const key = this.buildKey(baseUrl, endpoint, data);
     const inflight = this.inflight.get(key);
     if (inflight) return inflight;
