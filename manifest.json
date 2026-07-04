@@ -1,9 +1,9 @@
 {
-    "id": "obsidian-ima-plugin",
-    "name": "IMA Sync",
-    "version": "2.2.3",
-    "minAppVersion": "0.15.0",
-    "description": "同步 IMA 知识库到 Obsidian(增量+缓存+限流+诊断,Client ID/API Key 均需自行填写)",
-    "author": "bi",
-    "isDesktopOnly": true
+  "id": "obsidian-ima-plugin",
+  "name": "IMA Sync",
+  "version": "2.2.4",
+  "minAppVersion": "0.15.0",
+  "description": "同步 IMA 知识库到 Obsidian(增量+缓存+限流+诊断,Client ID/API Key 均需自行填写)",
+  "author": "bi",
+  "isDesktopOnly": true
 }
