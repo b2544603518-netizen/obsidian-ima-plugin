@@ -135,6 +135,11 @@ var ImaApi = class {
   }
   request(_0, _1) {
     return __async(this, arguments, function* (baseUrl, endpoint, data = {}) {
+    if (!this.clientId || !this.apiKey) {
+      throw new Error(
+        'Client ID 或 API Key 未配置，请在 Obsidian 设置 → IMA Sync 中填写自己的凭证（从 https://ima.qq.com/agent-interface 获取)'
+      );
+    }
       const key = this.buildKey(baseUrl, endpoint, data);
       const inflight = this.inflight.get(key);
       if (inflight)
