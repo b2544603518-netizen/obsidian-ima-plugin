@@ -232,14 +232,15 @@ var ImaApi = class {
   getAllKnowledgeList(kbId, forceRefresh = false) {
     return __async(this, null, function* () {
       const cached = this.cache.getKnowledgeList(kbId, forceRefresh);
-      if (cached)
+      if (cached && cached.every((item) => Object.prototype.hasOwnProperty.call(item, "folderPath"))) {
         return cached;
-      const allItems = yield this.fetchKnowledgeListRecursive(kbId, "", new Set());
+      }
+      const allItems = yield this.fetchKnowledgeListRecursive(kbId, "", new Set(), "");
       this.cache.setKnowledgeList(kbId, allItems);
       return allItems;
     });
   }
-  fetchKnowledgeListRecursive(kbId, folderId, visited) {
+  fetchKnowledgeListRecursive(kbId, folderId, visited, currentPath) {
     return __async(this, null, function* () {
       var _a;
       if (visited.has(folderId)) {
@@ -266,7 +267,8 @@ var ImaApi = class {
           const item = {
             media_id: raw.media_id || raw.docid || "",
             media_type: raw.media_type !== void 0 ? raw.media_type : 0,
-            title: raw.title || "\u672A\u547D\u540D"
+            title: raw.title || "\u672A\u547D\u540D",
+            folderPath: currentPath
           };
           item.can_fetch_content = raw.can_fetch_content;
           item.folder_id = ((_a = raw.folder_info) == null ? void 0 : _a.folder_id) || raw.folder_id || "";
@@ -284,7 +286,8 @@ var ImaApi = class {
           if (item.media_type === 99 && item.media_id && item.media_id.startsWith("folder_")) {
             log(`\u9012\u5F52\u62C9\u53D6\u6587\u4EF6\u5939: ${item.title} (folder_id=${item.media_id})`);
             try {
-              const subItems = yield this.fetchKnowledgeListRecursive(kbId, item.media_id, visited);
+              const childPath = currentPath ? `${currentPath}/${item.title}` : item.title;
+              const subItems = yield this.fetchKnowledgeListRecursive(kbId, item.media_id, visited, childPath);
               items.push(...subItems);
               log(`  \u6587\u4EF6\u5939 "${item.title}" \u5185\u6709 ${subItems.length} \u4E2A\u6761\u76EE`);
             } catch (e) {
@@ -698,6 +701,37 @@ var SyncManager = class {
   checkCancel() {
     return this.cancelRequested;
   }
+  buildKnowledgeItemPath(kb, item) {
+    const kbFolder = sanitizeFileName(kb.kb_name || "\u672A\u77E5\u77E5\u8BC6\u5E93");
+    const folderSegments = (item.folderPath || "").split("/").map((segment) => sanitizeFileName(segment)).filter((segment) => segment.length > 0);
+    const safeTitle = sanitizeFileName(item.title || "\u672A\u547D\u540D");
+    return [
+      this.settings.targetFolder,
+      kbFolder,
+      ...folderSegments,
+      `${safeTitle}.md`
+    ].filter((segment) => segment.length > 0).join("/");
+  }
+  moveExistingFileToExpectedPath(currentPath, expectedPath) {
+    return __async(this, null, function* () {
+      const normalizedCurrent = (0, import_obsidian3.normalizePath)(currentPath);
+      const normalizedExpected = (0, import_obsidian3.normalizePath)(expectedPath);
+      if (normalizedCurrent === normalizedExpected)
+        return false;
+      const currentFile = this.app.vault.getAbstractFileByPath(normalizedCurrent);
+      if (!(currentFile instanceof import_obsidian3.TFile))
+        return false;
+      const existingTarget = this.app.vault.getAbstractFileByPath(normalizedExpected);
+      if (existingTarget && existingTarget !== currentFile)
+        return false;
+      const targetFolder = normalizedExpected.split("/").slice(0, -1).join("/");
+      if (targetFolder) {
+        yield ensureFolderExists(this.app, targetFolder);
+      }
+      yield this.app.vault.rename(currentFile, normalizedExpected);
+      return true;
+    });
+  }
   buildLocalIndex(folder) {
     const index = new Map();
     try {
@@ -861,13 +895,13 @@ var SyncManager = class {
               phase: "downloading",
               cancelled: false
             });
-            const safeTitle = sanitizeFileName(title);
-            const filePath = `${this.settings.targetFolder}/${kb.kb_name}/${safeTitle}.md`;
+            const filePath = this.buildKnowledgeItemPath(kb, item);
             if (mode === "incremental") {
               const local = localIndex.get(item.media_id);
               if (local) {
+                const moved = yield this.moveExistingFileToExpectedPath(local.path, filePath);
                 result.skipped++;
-                log2(`  \u8DF3\u8FC7(\u5DF2\u5B58\u5728): ${title}`);
+                log2(moved ? `  \u79FB\u52A8\u5230\u76EE\u5F55\u7ED3\u6784\u5E76\u8DF3\u8FC7(\u5DF2\u5B58\u5728): ${title}` : `  \u8DF3\u8FC7(\u5DF2\u5B58\u5728): ${title}`);
                 this.emit({
                   total: totalItems,
                   current: processed,
@@ -888,6 +922,7 @@ var SyncManager = class {
                   source: "IMA\u77E5\u8BC6\u5E93",
                   kb_name: kb.kb_name || "\u672A\u77E5",
                   title,
+                  folder_path: item.folderPath || "",
                   media_id: item.media_id,
                   media_type: item.media_type,
                   sync_time: new Date().toISOString()
