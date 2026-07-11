@@ -178,6 +178,8 @@ export default class ImaPlugin extends Plugin {
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    this.settings.clientId = (this.settings.clientId || '').trim();
+    this.settings.apiKey = (this.settings.apiKey || '').trim();
     if (!this.settings.selectedKbs) this.settings.selectedKbs = [];
     if (!this.settings.selectedNotes) this.settings.selectedNotes = {};
     if (!this.settings.targetFolder) this.settings.targetFolder = 'IMA知识库';
@@ -190,6 +192,16 @@ export default class ImaPlugin extends Plugin {
   }
 
   async saveSettings() {
+    this.settings.clientId = (this.settings.clientId || '').trim();
+    this.settings.apiKey = (this.settings.apiKey || '').trim();
+    if (this.api) {
+      this.api.updateCredentials(this.settings.clientId, this.settings.apiKey);
+      this.api.configure({
+        qpsLimit: this.settings.qpsLimit,
+        maxRetries: this.settings.maxRetries,
+        requestTimeoutMs: this.settings.requestTimeoutMs,
+      });
+    }
     (this.settings as any).cache = this.cache.export();
     await this.saveData(this.settings);
   }
