@@ -54,6 +54,8 @@ export interface KnowledgeItem {
   media_id: string;
   media_type: number;
   title: string;
+  /** 知识库内相对文件夹路径,空字符串表示知识库根目录 */
+  folderPath?: string;
   update_time?: number;
   create_time?: number;
   /** 是否可以获取内容(来自 API,文件夹=false,笔记=true) */

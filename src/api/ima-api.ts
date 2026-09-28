@@ -214,10 +214,12 @@ export class ImaApi {
   // 返回结构: data.knowledge_list[].{media_id, media_type, title, folder_info.folder_id, can_fetch_content, ...}
   async getAllKnowledgeList(kbId: string, forceRefresh: boolean = false): Promise<KnowledgeItem[]> {
     const cached = this.cache.getKnowledgeList(kbId, forceRefresh);
-    if (cached) return cached;
+    if (cached && cached.every(item => Object.prototype.hasOwnProperty.call(item, 'folderPath'))) {
+      return cached;
+    }
 
-    // 从根目录开始递归拉取
-    const allItems = await this.fetchKnowledgeListRecursive(kbId, '', new Set<string>());
+    // 从根目录开始递归拉取,并保留 IMA 内部文件夹路径
+    const allItems = await this.fetchKnowledgeListRecursive(kbId, '', new Set<string>(), '');
     this.cache.setKnowledgeList(kbId, allItems);
     return allItems;
   }
@@ -231,7 +233,8 @@ export class ImaApi {
   private async fetchKnowledgeListRecursive(
     kbId: string,
     folderId: string,
-    visited: Set<string>
+    visited: Set<string>,
+    currentPath: string
   ): Promise<KnowledgeItem[]> {
     if (visited.has(folderId)) {
       console.warn('[IMA] 检测到文件夹循环,跳过:', folderId);
@@ -263,6 +266,7 @@ export class ImaApi {
           media_id: raw.media_id || raw.docid || '',
           media_type: raw.media_type !== undefined ? raw.media_type : 0,
           title: raw.title || '未命名',
+          folderPath: currentPath,
         };
 
         // 保存额外信息供同步逻辑使用
@@ -285,10 +289,12 @@ export class ImaApi {
         if (item.media_type === 99 && item.media_id && item.media_id.startsWith('folder_')) {
           log(`递归拉取文件夹: ${item.title} (folder_id=${item.media_id})`);
           try {
+            const childPath = currentPath ? `${currentPath}/${item.title}` : item.title;
             const subItems = await this.fetchKnowledgeListRecursive(
               kbId,
               item.media_id,  // ← 用 media_id 作为 folder_id
-              visited
+              visited,
+              childPath
             );
             items.push(...subItems);
             log(`  文件夹 "${item.title}" 内有 ${subItems.length} 个条目`);
