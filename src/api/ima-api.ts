@@ -72,6 +72,11 @@ export class ImaApi {
     if (opts.requestTimeoutMs !== undefined) this.requestTimeoutMs = opts.requestTimeoutMs;
   }
 
+  updateCredentials(clientId: string, apiKey: string) {
+    this.clientId = clientId.trim();
+    this.apiKey = apiKey.trim();
+  }
+
   /**
    * 节流:确保两次请求间隔不小于 minIntervalMs
    */
